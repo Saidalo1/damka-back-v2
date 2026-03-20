@@ -13,8 +13,8 @@ from apps.users.models import User, Countries
 
 class RegisterSerializer(serializers.Serializer):
     """Step 1: request SMS code for registration (phone/email + password)."""
-    phone_number = serializers.CharField(max_length=13, required=False)
-    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_null=True)
     password = serializers.CharField(min_length=8, max_length=128, write_only=True)
 
     def validate(self, data):
@@ -25,8 +25,8 @@ class RegisterSerializer(serializers.Serializer):
 
 class SMSVerifySerializer(serializers.Serializer):
     """Step 2: verify SMS code to complete registration."""
-    phone_number = serializers.CharField(max_length=13, required=False)
-    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_null=True)
     user_entered_code = serializers.CharField(
         max_length=4,
         validators=[
@@ -42,8 +42,8 @@ class SMSVerifySerializer(serializers.Serializer):
 
 class LoginSerializer(serializers.Serializer):
     """Login with phone number/email + password."""
-    phone_number = serializers.CharField(max_length=13, required=False)
-    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_null=True)
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
@@ -78,8 +78,8 @@ class LoginSerializer(serializers.Serializer):
 
 class CheckAccountSerializer(serializers.Serializer):
     """Check if phone number or email is already registered."""
-    phone_number = serializers.CharField(max_length=13, required=False)
-    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_null=True)
 
     def validate(self, data):
         if not data.get("phone_number") and not data.get("email"):
@@ -89,8 +89,8 @@ class CheckAccountSerializer(serializers.Serializer):
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     """Request password reset — sends SMS/email code."""
-    phone_number = serializers.CharField(max_length=13, required=False)
-    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_null=True)
 
     def validate(self, data):
         if not data.get("phone_number") and not data.get("email"):
@@ -100,8 +100,8 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 
 class PasswordResetVerifySerializer(serializers.Serializer):
     """Verify password reset SMS code."""
-    phone_number = serializers.CharField(max_length=13, required=False)
-    email = serializers.EmailField(required=False)
+    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
+    email = serializers.EmailField(required=False, allow_null=True)
     verification_code = serializers.CharField(
         max_length=4,
         validators=[

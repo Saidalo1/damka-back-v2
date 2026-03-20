@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 
 import environ
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
 
 # Build paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -184,3 +186,82 @@ EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+
+# ── Unfold Admin Panel ───────────────────────────────────────────
+UNFOLD = {
+    "SITE_TITLE": "Damka.uz Admin",
+    "SITE_HEADER": "Damka.uz",
+    "SITE_SUBHEADER": "Checkers Game Platform",
+    "SITE_URL": "/",
+    "SITE_SYMBOL": "playing_cards",  # Material icon
+    "SHOW_HISTORY": True,
+    "SHOW_VIEW_ON_SITE": False,
+    "THEME": "dark",
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": False,
+        "navigation": [
+            {
+                "title": _("Dashboard"),
+                "separator": True,
+                "items": [
+                    {
+                        "title": _("Dashboard"),
+                        "icon": "dashboard",
+                        "link": reverse_lazy("admin:index"),
+                    },
+                ],
+            },
+            {
+                "title": _("Game"),
+                "separator": True,
+                "collapsible": False,
+                "items": [
+                    {
+                        "title": _("Games"),
+                        "icon": "sports_esports",
+                        "link": reverse_lazy("admin:game_game_changelist"),
+                    },
+                    {
+                        "title": _("Game Types"),
+                        "icon": "category",
+                        "link": reverse_lazy("admin:game_gametypes_changelist"),
+                    },
+                    {
+                        "title": _("Time Controls"),
+                        "icon": "timer",
+                        "link": reverse_lazy("admin:game_gametypestime_changelist"),
+                    },
+                    {
+                        "title": _("Chat Messages"),
+                        "icon": "chat",
+                        "link": reverse_lazy("admin:game_chat_changelist"),
+                    },
+                    {
+                        "title": _("Guest Connections"),
+                        "icon": "person_outline",
+                        "link": reverse_lazy("admin:game_connectionhistory_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": _("Users"),
+                "separator": True,
+                "collapsible": False,
+                "items": [
+                    {
+                        "title": _("Users"),
+                        "icon": "people",
+                        "link": reverse_lazy("admin:users_user_changelist"),
+                    },
+                    {
+                        "title": _("Countries"),
+                        "icon": "public",
+                        "link": reverse_lazy("admin:users_countries_changelist"),
+                    },
+                ],
+            },
+        ],
+    },
+}
+

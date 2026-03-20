@@ -145,6 +145,16 @@ CELERY_TIMEZONE = TIME_ZONE
 # Redis (direct access for rematch, matchmaking, etc.)
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 
+# Django REST Framework
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.AllowAny",
+    ],
+}
+
 # CORS
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[
     "http://localhost:3000",

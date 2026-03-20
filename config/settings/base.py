@@ -142,6 +142,9 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 
+# Redis (direct access for rematch, matchmaking, etc.)
+REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+
 # CORS
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[
     "http://localhost:3000",

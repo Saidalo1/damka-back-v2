@@ -8,14 +8,25 @@ import logging
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
+from apps.game.consumers.mixins.chat import ChatMixin
 from apps.game.consumers.mixins.connection import ConnectionMixin
 from apps.game.consumers.mixins.game_end import GameEndMixin
 from apps.game.consumers.mixins.move import MoveMixin
+from apps.game.consumers.mixins.rematch import RematchMixin
+from apps.game.consumers.mixins.timer import TimerMixin
 
 logger = logging.getLogger(__name__)
 
 
-class GameConsumer(ConnectionMixin, MoveMixin, GameEndMixin, AsyncJsonWebsocketConsumer):
+class GameConsumer(
+    ConnectionMixin,
+    MoveMixin,
+    TimerMixin,
+    ChatMixin,
+    RematchMixin,
+    GameEndMixin,
+    AsyncJsonWebsocketConsumer,
+):
     """
     WebSocket consumer for an active draughts game.
 
@@ -56,27 +67,12 @@ class GameConsumer(ConnectionMixin, MoveMixin, GameEndMixin, AsyncJsonWebsocketC
         """Clean up on disconnect."""
         await self.handle_disconnect()
 
-    # Stub handlers for mixins not yet implemented
-    async def handle_chat(self, message):
-        """TODO: Implement in ChatMixin."""
-        pass
+    async def game_over(self, event):
+        """
+        Handle game.over from Celery tasks (timeout, first move timeout).
 
-    async def handle_rematch(self, message):
-        """TODO: Implement in RematchMixin."""
-        pass
-
-    async def handle_time_request(self, message):
-        """TODO: Implement in TimerMixin."""
-        pass
-
-    async def cancel_current_timer(self):
-        """TODO: Implement in TimerMixin."""
-        pass
-
-    async def start_move_timer(self):
-        """TODO: Implement in TimerMixin."""
-        pass
-
-    async def start_rematch_wait_timer(self):
-        """TODO: Implement in RematchMixin."""
-        pass
+        Celery tasks send game.over via channel_layer.group_send.
+        Each connected consumer receives this and forwards to its client.
+        """
+        data = event.get("data", {})
+        await self.send_json(data)

@@ -132,7 +132,15 @@ class MoveMixin:
         Handle game.message from channel layer — filter by target color.
 
         Also syncs local board state when receiving opponent's move.
+        Supports broadcast=True for messages that go to all players (chat, rematch).
         """
+        # Broadcast messages go to everyone
+        if event.get("broadcast"):
+            data = event["data"]
+            await self.send_json(data)
+            return
+
+        # Targeted messages — filter by color
         if event.get("target_color") != self.player_color:
             return
 

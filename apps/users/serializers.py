@@ -1,180 +1,171 @@
-"""Serializers for the users app — registration, login, profile.
-
-Matches v1 API contract exactly:
-- Register: phone_number/email + password → sends SMS
-- SMS Verify: phone_number/email + user_entered_code → creates user, returns token
-- Login: phone_number/email + password → returns token
 """
-from django.core.validators import RegexValidator
-from rest_framework import serializers
+Serializers for the users app — direct port from v1.
+
+Uses BaseEmailPhoneNumber pattern from v1's shared.django.serializers.
+"""
+from django.contrib.auth.password_validation import validate_password
+from django.core.validators import RegexValidator, validate_email
+from django.utils.translation import gettext_lazy as _
+from rest_framework.exceptions import ValidationError
+from rest_framework.fields import CharField, EmailField
+from rest_framework.serializers import Serializer, ModelSerializer
+from rest_framework.status import HTTP_400_BAD_REQUEST
 
 from apps.users.models import User, Countries
 
 
-class RegisterSerializer(serializers.Serializer):
-    """Step 1: request SMS code for registration (phone/email + password)."""
-    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
-    password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+# ---------- Base serializer (v1: shared.django.serializers.BaseEmailPhoneNumber) ----------
 
-    def validate(self, data):
-        if not data.get("phone_number") and not data.get("email"):
-            raise serializers.ValidationError("Provide phone_number or email")
-        return data
-
-
-class SMSVerifySerializer(serializers.Serializer):
-    """Step 2: verify SMS code to complete registration."""
-    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
-    user_entered_code = serializers.CharField(
-        max_length=4,
-        validators=[
-            RegexValidator(r'^\d{4}$', 'Verification code must be a 4-digit number')
-        ],
+class BaseEmailPhoneNumber(Serializer):
+    """Base serializer requiring at least one of email/phone_number."""
+    email = EmailField(
+        help_text=_("Email address"),
+        validators=[validate_email],
+        required=False,
+        allow_null=True,
+    )
+    phone_number = CharField(
+        validators=[RegexValidator(r'^\+998\d{9}$', _('Phone number must be valid!'))],
+        help_text=_('Phone Number Format'),
+        required=False,
+        allow_null=True,
     )
 
-    def validate(self, data):
-        if not data.get("phone_number") and not data.get("email"):
-            raise serializers.ValidationError("Provide phone_number or email")
-        return data
+    def validate(self, attrs):
+        if attrs.get('email', None) or attrs.get('phone_number', None):
+            return super().validate(attrs)
+        raise ValidationError(
+            {'error': _('One of the following attributes must be provided!')},
+            HTTP_400_BAD_REQUEST,
+        )
 
 
-class LoginSerializer(serializers.Serializer):
-    """Login with phone number/email + password."""
-    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
-    password = serializers.CharField(write_only=True)
+class CustomValidationError(ValidationError):
+    """Custom validation error allowing status code override."""
+    def __init__(self, detail=None, status_code=None):
+        super().__init__(detail)
+        if status_code:
+            self.status_code = status_code
 
-    def validate(self, data):
-        if not data.get("phone_number") and not data.get("email"):
-            raise serializers.ValidationError("Provide phone_number or email")
 
-        from django.contrib.auth import authenticate
+# ---------- Registration ----------
 
-        # Try phone login first, then email
-        user = None
-        if data.get("phone_number"):
-            user = authenticate(
-                username=data["phone_number"],
-                password=data["password"],
-            )
-        elif data.get("email"):
-            # Find user by email, then authenticate
-            try:
-                email_user = User.objects.get(email=data["email"])
-                user = authenticate(
-                    username=email_user.phone_number or email_user.username,
-                    password=data["password"],
+class AuthEmailPhoneNumberSerializer(BaseEmailPhoneNumber):
+    """Registration step 1: phone/email + password → send SMS."""
+    password = CharField(min_length=8, max_length=128, help_text=_('Password'))
+
+    def validate_phone_number(self, phone_number=None):
+        if phone_number and self.context.get('session', {}).get(phone_number):
+            raise CustomValidationError(_('A_CONFIRMATION_CODE_HAS_BEEN_SENT_ALREADY'))
+        return phone_number
+
+    def validate_email(self, email=None):
+        if email and self.context.get('session', {}).get(email):
+            raise CustomValidationError(_('A_CONFIRMATION_CODE_HAS_BEEN_SENT_ALREADY'))
+        return email
+
+
+class SMSVerificationSerializer(BaseEmailPhoneNumber):
+    """Registration step 2: phone/email + user_entered_code → verify."""
+    user_entered_code = CharField(
+        validators=[
+            RegexValidator(r'^\d{4}$', _('Verification code must be a 4-digit number'))
+        ],
+        help_text=_('4-digit verification code'),
+    )
+
+    def validate_phone_number(self, phone_number=None):
+        if phone_number:
+            session = self.context.get('session', {})
+            if not session.get(phone_number):
+                raise CustomValidationError(
+                    _('This phone number is not waiting for verification'),
+                    HTTP_400_BAD_REQUEST,
                 )
-            except User.DoesNotExist:
-                pass
+        return phone_number
 
-        if not user:
-            raise serializers.ValidationError("Invalid credentials")
-        data["user"] = user
-        return data
-
-
-class CheckAccountSerializer(serializers.Serializer):
-    """Check if phone number or email is already registered."""
-    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
-
-    def validate(self, data):
-        if not data.get("phone_number") and not data.get("email"):
-            raise serializers.ValidationError("Provide phone_number or email")
-        return data
+    def validate_email(self, email=None):
+        if email:
+            session = self.context.get('session', {})
+            if not session.get(email):
+                raise CustomValidationError(
+                    _('This email is not waiting for verification'),
+                    HTTP_400_BAD_REQUEST,
+                )
+        return email
 
 
-class PasswordResetRequestSerializer(serializers.Serializer):
-    """Request password reset — sends SMS/email code."""
-    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
+# ---------- Login ----------
 
-    def validate(self, data):
-        if not data.get("phone_number") and not data.get("email"):
-            raise serializers.ValidationError("Provide phone_number or email")
-        return data
+class LoginSerializer(BaseEmailPhoneNumber):
+    """Login: phone/email + password."""
+    password = CharField(min_length=8, max_length=128, help_text=_('Password'))
 
 
-class PasswordResetVerifySerializer(serializers.Serializer):
-    """Verify password reset SMS code."""
-    phone_number = serializers.CharField(max_length=13, required=False, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
-    verification_code = serializers.CharField(
-        max_length=4,
-        validators=[
-            RegexValidator(r'^\d{4}$', 'Verification code must be a 4-digit number')
-        ],
+# ---------- Check account ----------
+
+class CheckAccountByNumberOrEmailSerializer(BaseEmailPhoneNumber):
+    """Check if phone/email is already registered."""
+    pass
+
+
+# ---------- Password reset ----------
+
+class PasswordResetRequestSerializer(BaseEmailPhoneNumber):
+    """Password reset: request code."""
+    pass
+
+
+class PasswordResetVerificationSerializer(BaseEmailPhoneNumber):
+    """Password reset: verify code."""
+    verification_code = CharField(
+        validators=[RegexValidator(r'^\d{4}$', _('Verification code must be a valid 4-digit number!'))],
+        help_text=_('4-digit verification code.'),
     )
 
-    def validate(self, data):
-        if not data.get("phone_number") and not data.get("email"):
-            raise serializers.ValidationError("Provide phone_number or email")
-        return data
+
+class PasswordResetConfirmSerializer(Serializer):
+    """Password reset: confirm with new password."""
+    new_password = CharField(write_only=True, min_length=8, max_length=128)
 
 
-class PasswordResetConfirmSerializer(serializers.Serializer):
-    """Confirm password reset with new password."""
-    new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+# ---------- Profile ----------
 
-
-class UserProfileSerializer(serializers.ModelSerializer):
-    """User profile — read-only representation."""
-    ratings = serializers.SerializerMethodField()
-    country = serializers.SerializerMethodField()
-
+class UserUpdateModelSerializer(ModelSerializer):
     class Meta:
         model = User
-        fields = [
-            "id", "username", "first_name", "last_name",
-            "phone_number", "email", "avatar",
-            "ratings", "country", "date_joined",
-        ]
-        read_only_fields = fields
-
-    def get_ratings(self, obj):
-        return {
-            "bullet": obj.bullet_rating,
-            "blitz": obj.blitz_rating,
-            "rapid": obj.rapid_rating,
-        }
-
-    def get_country(self, obj):
-        if not obj.country:
-            return None
-        return {
-            "title": obj.country.title,
-            "code": obj.country.code,
-            "flag": obj.country.flag.url if obj.country.flag else None,
-        }
-
-
-class UserUpdateSerializer(serializers.ModelSerializer):
-    """Update user profile (username, avatar, country, names)."""
-
-    class Meta:
-        model = User
-        fields = ["username", "first_name", "last_name", "avatar", "country"]
+        fields = ('username', 'avatar', 'country', 'first_name', 'last_name')
         extra_kwargs = {
-            "username": {"required": False},
-            "first_name": {"required": False},
-            "last_name": {"required": False},
-            "avatar": {"required": False},
-            "country": {"required": False},
+            'username': {'required': False},
+            'avatar': {'required': False},
+            'country': {'required': False},
+            'first_name': {'required': False},
+            'last_name': {'required': False},
         }
 
 
-class ChangePasswordSerializer(serializers.Serializer):
-    """Change password — requires old password."""
-    old_password = serializers.CharField(write_only=True)
-    new_password = serializers.CharField(min_length=6, write_only=True)
+class ChangePasswordSerializer(Serializer):
+    """Password change endpoint."""
+    old_password = CharField(required=True)
+    new_password = CharField(required=True)
+
+    @staticmethod
+    def validate_new_password(value):
+        try:
+            validate_password(value)
+        except Exception as error:
+            raise CustomValidationError({'error': ''.join(str(e) for e in error)})
+        return value
+
+    def validate(self, attrs):
+        old_password = attrs.get('old_password')
+        new_password = attrs.get('new_password')
+        if old_password and new_password and new_password == old_password:
+            raise CustomValidationError({'error': _('New password should not match with old!')})
+        return super().validate(attrs)
 
 
-class CountrySerializer(serializers.ModelSerializer):
-    """Country list serializer."""
-
+class CheckPasswordSerializer(ModelSerializer):
     class Meta:
-        model = Countries
-        fields = ["id", "title", "code", "flag"]
+        model = User
+        fields = ('password',)

@@ -1,438 +1,522 @@
 """
-User views — authentication, profile management.
+User auth views — direct port from v1.
 
-Matches v1 API contract exactly:
-- POST /api/users/register/      — request SMS code (phone/email + password)
-- POST /api/users/sms/           — verify SMS + create account
-- POST /api/users/login/         — login with phone/email + password
-- POST /api/users/check/         — check if account exists
-- GET  /api/users/check/<username>/  — check if username is taken
-- POST /api/users/guest/         — generate anonymous token
-- GET  /api/users/profile/       — get current user profile
-- PATCH /api/users/profile/      — update profile
-- POST /api/users/change-password/ — change password
-- GET  /api/users/countries/     — list all countries
-- POST /api/users/reset/account/ — request password reset
-- POST /api/users/reset/sms/     — verify reset SMS code
-- POST /api/users/reset/confirm/<uidb64>/<token>/ — set new password
+Differences from v1:
+- Uses Django session instead of STRICT_REDIS for SMS code storage
+  (TODO: migrate to Redis when Celery SMS sending is integrated)
+- In DEBUG mode, SMS code is logged to console and "0000" is always accepted
+- Uses apps.users.models instead of users.models
 """
 import logging
-import uuid
+from json import dumps, loads
+from secrets import token_urlsafe
 
 from django.conf import settings
-from rest_framework import status
+from django.contrib.auth import authenticate
+from django.core.exceptions import ValidationError
+from django.db.models import F, Value
+from django.db.models.functions import Concat, Lower
+from django.http import JsonResponse
+from django.urls import reverse
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.translation import gettext_lazy as _
 from rest_framework.authtoken.models import Token
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.generics import CreateAPIView, GenericAPIView, UpdateAPIView
+from rest_framework.parsers import MultiPartParser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.status import HTTP_400_BAD_REQUEST, HTTP_200_OK, HTTP_201_CREATED, HTTP_404_NOT_FOUND
 from rest_framework.views import APIView
 
 from apps.users.models import User, Countries
 from apps.users.serializers import (
-    RegisterSerializer,
-    SMSVerifySerializer,
+    AuthEmailPhoneNumberSerializer,
+    SMSVerificationSerializer,
     LoginSerializer,
-    CheckAccountSerializer,
-    UserProfileSerializer,
-    UserUpdateSerializer,
+    CheckAccountByNumberOrEmailSerializer,
+    UserUpdateModelSerializer,
     ChangePasswordSerializer,
-    CountrySerializer,
+    CheckPasswordSerializer,
     PasswordResetRequestSerializer,
-    PasswordResetVerifySerializer,
+    PasswordResetVerificationSerializer,
     PasswordResetConfirmSerializer,
 )
+from apps.users.tokens import account_activation_token
+from shared.django import generate_sms_code
 
 logger = logging.getLogger(__name__)
 
+# Verification code TTL in seconds (5 minutes)
+VERIFICATION_CODE_TTL = 300
 
-class RegisterView(APIView):
+
+# ---------- Helpers ----------
+
+def _get_session_key(identifier: str) -> str:
+    """Session key for SMS verification data."""
+    return f"sms_{identifier}"
+
+
+def _store_sms_data(session, identifier: str, code: str, extra: dict = None):
+    """Store SMS verification code + extra data in session."""
+    data = {'code': code}
+    if extra:
+        data.update(extra)
+    session[_get_session_key(identifier)] = dumps(data)
+
+
+def _get_sms_data(session, identifier: str) -> dict | None:
+    """Retrieve SMS verification data from session."""
+    raw = session.get(_get_session_key(identifier))
+    if raw:
+        return loads(raw)
+    return None
+
+
+def _clear_sms_data(session, identifier: str):
+    """Remove SMS verification data from session."""
+    key = _get_session_key(identifier)
+    if key in session:
+        del session[key]
+
+
+def _send_sms_code(phone_number: str, code: str):
     """
-    Step 1: Request SMS verification code.
+    Send SMS code to phone number.
 
-    V1 parity: accepts phone_number/email + password.
-    Stores password in session, sends SMS code.
+    In DEBUG: log to console only.
+    In production: TODO — integrate Eskiz.uz via Celery task.
     """
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        phone = serializer.validated_data.get("phone_number")
-        email = serializer.validated_data.get("email")
-        password = serializer.validated_data["password"]
-        identifier = phone or email
-
-        # Check if already registered
-        if phone and User.objects.filter(phone_number=phone).exists():
-            return Response(
-                {"error": "Phone number already registered"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if email and User.objects.filter(email=email).exists():
-            return Response(
-                {"error": "Email already registered"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Check if SMS already sent (v1 parity)
-        if request.session.get(identifier):
-            return Response(
-                {"detail": "A_CONFIRMATION_CODE_HAS_BEEN_SENT_ALREADY"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Generate 4-digit code
-        import random
-        code = f"{random.randint(1000, 9999)}"
-
-        # Store in session (code + password for later verification)
-        request.session[identifier] = {
-            "code": code,
-            "password": password,
-            "phone_number": phone,
-            "email": email,
-        }
-
-        # TODO: Send SMS via Eskiz.uz or email
-        if settings.DEBUG:
-            logger.info("DEBUG: SMS code for %s is %s", identifier, code)
-
-        return Response({"message": "SMS code sent", "data": identifier})
+    if settings.DEBUG:
+        logger.info("DEBUG SMS code for %s: %s", phone_number, code)
+    else:
+        # TODO: send_notification.apply_async(kwargs={"phone": phone_number, "code": code})
+        logger.warning("SMS sending not implemented in production yet!")
 
 
-class SMSVerifyView(APIView):
+def _verify_code(session, identifier: str, user_code: str) -> tuple[bool, dict | None, str]:
     """
-    Step 2: Verify SMS code and create account.
+    Verify SMS code. Returns (success, sms_data, error_message).
 
-    V1 parity: accepts phone_number/email + user_entered_code.
-    Retrieves password from session, creates user, returns token + username.
+    In DEBUG mode, "0000" is always accepted.
     """
-    permission_classes = [AllowAny]
+    sms_data = _get_sms_data(session, identifier)
 
-    def post(self, request):
-        serializer = SMSVerifySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    if not sms_data:
+        return False, None, str(_('This identifier is not waiting for verification'))
 
-        phone = serializer.validated_data.get("phone_number")
-        email = serializer.validated_data.get("email")
-        user_entered_code = serializer.validated_data["user_entered_code"]
-        identifier = phone or email
+    saved_code = sms_data.get('code')
 
-        # Get stored registration data from session
-        session_data = request.session.get(identifier)
-        if not session_data:
-            return Response(
-                {"error": "No verification pending for this identifier"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+    # DEBUG mode: accept "0000"
+    if settings.DEBUG and user_code == "0000":
+        return True, sms_data, ""
 
-        # Verify code (DEBUG: accept "0000")
-        stored_code = session_data.get("code", "")
-        if settings.DEBUG:
-            # In debug mode, accept "0000" as valid code
-            if user_entered_code != "0000" and user_entered_code != stored_code:
-                return Response(
-                    {"error": "Invalid verification code"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        else:
-            if user_entered_code != stored_code:
-                return Response(
-                    {"error": "Invalid verification code"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+    if saved_code and user_code == saved_code:
+        return True, sms_data, ""
 
-        # Create user with password from session
-        password = session_data.get("password", "")
-        stored_phone = session_data.get("phone_number")
-        stored_email = session_data.get("email")
+    # Track attempts
+    attempts_key = f"{identifier}_attempts"
+    attempts = session.get(attempts_key, 0) + 1
+    session[attempts_key] = attempts
 
-        # Generate a default username (phone number, will be changed by user)
-        default_username = stored_phone or stored_email or str(uuid.uuid4())[:8]
+    if attempts >= 5:
+        _clear_sms_data(session, identifier)
+        if attempts_key in session:
+            del session[attempts_key]
+        return False, None, str(_('You have no more attempts, try again!'))
 
-        user = User.objects.create_user(
-            username=default_username,
-            phone_number=stored_phone or "",
-            email=stored_email or "",
-            password=password,
+    return False, None, str(_('Wrong SMS Code'))
+
+
+def _update_users_token(user_pk: int) -> str:
+    """Delete old token and create a new one for the user."""
+    Token.objects.filter(user_id=user_pk).delete()
+    new_token = Token.objects.create(user_id=user_pk)
+    return new_token.key
+
+
+# ==================== Registration ====================
+
+class SMSRequestView(CreateAPIView):
+    """Registration step 1: phone/email + password → send SMS code."""
+    serializer_class = AuthEmailPhoneNumberSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(
+            data=request.data,
+            context={'session': request.session},
         )
-        token = Token.objects.create(user=user)
+        if serializer.is_valid(raise_exception=True):
+            phone_number = serializer.validated_data.get('phone_number', None)
+            email = serializer.validated_data.get('email', None)
+            identifier = phone_number or email
 
-        # Clean up session
-        del request.session[identifier]
-        request.session.modified = True
+            code = generate_sms_code()
 
-        return Response({
-            "token": token.key,
-            "username": user.username,
-        }, status=status.HTTP_201_CREATED)
+            # Store code + password in session
+            _store_sms_data(request.session, identifier, code, {
+                'password': serializer.validated_data['password'],
+            })
 
+            if phone_number:
+                _send_sms_code(phone_number, code)
+            else:
+                # TODO: send_verification_email(email, code, _('User'))
+                logger.info("DEBUG email code for %s: %s", email, code)
 
-class LoginView(APIView):
-    """Login with phone number/email and password."""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = LoginSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        user = serializer.validated_data["user"]
-        token, _ = Token.objects.get_or_create(user=user)
-
-        return Response({
-            "token": token.key,
-            "username": user.username,
-        })
+            return Response({'message': _('SMS code sent'), 'data': identifier}, HTTP_201_CREATED)
+        return Response(serializer.errors, HTTP_400_BAD_REQUEST)
 
 
-class CheckAccountView(APIView):
-    """Check if a phone number or email is already registered."""
-    permission_classes = [AllowAny]
+class SMSVerificationView(CreateAPIView):
+    """Registration step 2: phone/email + user_entered_code → create user + return token."""
+    serializer_class = SMSVerificationSerializer
 
-    def post(self, request):
-        serializer = CheckAccountSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(
+            data=request.data,
+            context={'session': request.session},
+        )
+        if serializer.is_valid(raise_exception=True):
+            phone_number = serializer.validated_data.get('phone_number', None)
+            email = serializer.validated_data.get('email', None)
+            identifier = phone_number or email
+            user_entered_code = serializer.validated_data['user_entered_code']
 
-        phone = serializer.validated_data.get("phone_number")
-        email = serializer.validated_data.get("email")
+            success, sms_data, error_msg = _verify_code(
+                request.session, identifier, user_entered_code
+            )
 
-        if phone:
-            exists = User.objects.filter(phone_number=phone).exists()
-            identifier = phone
-        else:
-            exists = User.objects.filter(email=email).exists()
-            identifier = email
+            if success and sms_data:
+                # Generate unique username (v1 logic)
+                user_count = User.objects.count()
+                unique_username = f"User{user_count}"
+                while User.objects.filter(username=unique_username).exists():
+                    user_count += 1
+                    unique_username = f"User{user_count}"
 
-        result = {"data": identifier, "is_registered": exists}
-        if exists:
+                # Create user
+                if phone_number:
+                    user = User(phone_number=phone_number, username=unique_username)
+                else:
+                    user = User(email=email, username=unique_username)
+                user.set_password(sms_data.get('password'))
+                user.save()
+
+                token, _ = Token.objects.get_or_create(user=user)
+                _clear_sms_data(request.session, identifier)
+
+                return Response({
+                    'message': _('Successful'),
+                    'token': token.key,
+                    'username': unique_username,
+                }, HTTP_200_OK)
+            else:
+                return Response({'error': error_msg}, HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, HTTP_400_BAD_REQUEST)
+
+
+# ==================== Login ====================
+
+class LoginView(GenericAPIView):
+    """Login with phone/email + password → return token."""
+    serializer_class = LoginSerializer
+
+    def post(self, request, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid(raise_exception=True):
+            phone_number = serializer.validated_data.get('phone_number', None)
+            password = serializer.validated_data.get('password')
+
+            if phone_number:
+                user = authenticate(phone_number=phone_number, password=password)
+            else:
+                email = serializer.validated_data.get('email')
+                user = authenticate(email=email, password=password)
+
+            if user:
+                token, _ = Token.objects.get_or_create(user=user)
+                return Response({
+                    "token": token.key,
+                    "message": _("Successful"),
+                }, HTTP_200_OK)
+            else:
+                return Response({
+                    "token": None,
+                    "message": "Wrong password",
+                }, HTTP_400_BAD_REQUEST)
+
+
+# ==================== Check account ====================
+
+class CheckExistingAccountByNumberOrEmail(GenericAPIView):
+    """Check if phone/email is already registered."""
+    serializer_class = CheckAccountByNumberOrEmailSerializer
+
+    def post(self, request, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid(raise_exception=True):
+            phone_number = serializer.validated_data.get('phone_number', None)
+            if phone_number is None:
+                email = serializer.validated_data.get('email', None)
+                once = email
+            else:
+                once = phone_number
+
+            response = {'data': once}
+
             try:
                 user = (
-                    User.objects.get(phone_number=phone)
-                    if phone
-                    else User.objects.get(email=email)
+                    User.objects.get(phone_number=once) if phone_number
+                    else User.objects.get(email=once)
                 )
-                result["username"] = user.username
+                response.update({
+                    'is_registered': True,
+                    'full_name': user.username,
+                })
             except User.DoesNotExist:
-                pass
+                response.update({
+                    'is_registered': False,
+                    'full_name': None,
+                })
+
+            return Response(response)
+
+
+class CheckExistingAccountByUsername(APIView):
+    """Check if username is taken."""
+    @staticmethod
+    def get(request, **kwargs):
+        username = kwargs.get('username')
+        try:
+            User.objects.get(username=username)
+            return Response({'is_taken': True})
+        except User.DoesNotExist:
+            return Response({'is_taken': False})
+
+
+# ==================== Profile ====================
+
+class UserUpdateView(UpdateAPIView):
+    """Update user profile (username, avatar, etc.)."""
+    serializer_class = UserUpdateModelSerializer
+    permission_classes = (IsAuthenticated,)
+    parser_classes = (MultiPartParser,)
+
+    def get_object(self):
+        return self.request.user
+
+
+class UserDetailAPIView(APIView):
+    """Get authenticated user profile."""
+    permission_classes = (IsAuthenticated,)
+
+    @staticmethod
+    def get(request, *args, **kwargs):
+        user = request.user
+        if not user.is_authenticated:
+            return Response({'is_guest': True})
+
+        result = {
+            'id': user.id,
+            'username': user.username,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'ratings': {
+                'bullet': user.bullet_rating,
+                'blitz': user.blitz_rating,
+                'rapid': user.rapid_rating,
+            },
+            'avatar': f"{user.avatar.url}" if user.avatar else None,
+            'date_joined': user.date_joined,
+            'is_guest': False,
+        }
+
+        if user.phone_number:
+            result['phone_number'] = user.phone_number
+        elif user.email:
+            result['email'] = user.email
 
         return Response(result)
 
 
-class CheckUsernameView(APIView):
-    """Check if a username is already taken."""
-    permission_classes = [AllowAny]
+class ChangePasswordView(GenericAPIView):
+    """Change password endpoint."""
+    serializer_class = ChangePasswordSerializer
+    permission_classes = (IsAuthenticated,)
 
-    def get(self, request, username):
-        is_taken = User.objects.filter(username=username).exists()
-        return Response({"is_taken": is_taken})
-
-
-class ProfileView(APIView):
-    """Get or update current user profile."""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        return Response(UserProfileSerializer(request.user).data)
-
-    def patch(self, request):
-        serializer = UserUpdateSerializer(
-            request.user, data=request.data, partial=True,
-        )
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(UserProfileSerializer(request.user).data)
-
-
-class ChangePasswordView(APIView):
-    """Change password — requires old password verification."""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        serializer = ChangePasswordSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
+    def post(self, request, *args, **kwargs):
         user = request.user
-        if not user.check_password(serializer.validated_data["old_password"]):
-            return Response(
-                {"error": "Wrong password"},
-                status=status.HTTP_400_BAD_REQUEST,
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            if not user.check_password(serializer.data.get("old_password")):
+                return Response({"error": _("Wrong password.")}, HTTP_400_BAD_REQUEST)
+            user.set_password(serializer.data.get("new_password"))
+            user.save(update_fields=('password',))
+            new_token = _update_users_token(user.pk)
+            return Response({
+                'message': _('Your password updated successfully!'),
+                'new_token': new_token,
+            }, HTTP_200_OK)
+        return Response(serializer.errors, HTTP_400_BAD_REQUEST)
+
+
+class CheckPasswordView(GenericAPIView):
+    """Check current password endpoint."""
+    serializer_class = CheckPasswordSerializer
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            if not user.check_password(serializer.data.get("password")):
+                return Response({"error": _("Wrong password!")}, HTTP_400_BAD_REQUEST)
+            return Response({'message': _('Correct password!')}, HTTP_200_OK)
+        return Response(serializer.errors, HTTP_400_BAD_REQUEST)
+
+
+# ==================== Password reset ====================
+
+class PasswordResetRequestView(GenericAPIView):
+    """Password reset step 1: phone/email → send verification code."""
+    serializer_class = PasswordResetRequestSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid(raise_exception=True):
+            phone_number = serializer.validated_data.get('phone_number', None)
+            email = serializer.validated_data.get('email', None)
+            identifier = phone_number or email
+
+            # Check if already sent
+            existing = _get_sms_data(request.session, f"password_reset:{identifier}")
+            if existing:
+                return Response(
+                    {'error': _('A verification code has already been sent to this data.')},
+                    HTTP_400_BAD_REQUEST,
+                )
+
+            # Check user exists
+            try:
+                if phone_number:
+                    User.objects.get(phone_number=identifier)
+                else:
+                    User.objects.get(email=identifier)
+            except User.DoesNotExist:
+                return Response(
+                    {'message': _('User with this data does not exist!')},
+                    HTTP_404_NOT_FOUND,
+                )
+
+            code = generate_sms_code()
+
+            if phone_number:
+                _send_sms_code(phone_number, code)
+            else:
+                logger.info("DEBUG reset email code for %s: %s", email, code)
+
+            _store_sms_data(request.session, f"password_reset:{identifier}", code)
+
+            return Response({'message': _('Verification code sent successfully!')}, HTTP_200_OK)
+
+
+class PasswordResetVerificationView(GenericAPIView):
+    """Password reset step 2: phone/email + verification_code → get reset link."""
+    serializer_class = PasswordResetVerificationSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid(raise_exception=True):
+            phone_number = serializer.validated_data.get('phone_number', None)
+            email = serializer.validated_data.get('email', None)
+            identifier = phone_number or email
+            user_entered_code = serializer.validated_data['verification_code']
+
+            success, sms_data, error_msg = _verify_code(
+                request.session, f"password_reset:{identifier}", user_entered_code
             )
 
-        user.set_password(serializer.validated_data["new_password"])
-        user.save(update_fields=["password"])
+            if success:
+                # Mark as verified
+                request.session[f"password_reset_verified:{identifier}"] = True
 
-        # Regenerate token after password change
-        Token.objects.filter(user=user).delete()
-        new_token = Token.objects.create(user=user)
+                user = (
+                    User.objects.get(phone_number=identifier) if phone_number
+                    else User.objects.get(email=identifier)
+                )
+                uid = urlsafe_base64_encode(force_bytes(user.pk))
+                token = account_activation_token.make_token(user)
+                current_site = request.build_absolute_uri('/')[:-1]
+                reset_link = current_site + reverse('password_reset_confirm', args=(uid, token))
 
-        return Response({
-            "message": "Password updated",
-            "new_token": new_token.key,
-        })
+                _clear_sms_data(request.session, f"password_reset:{identifier}")
 
+                return Response({
+                    'message': _('Successfully verified!'),
+                    'reset_link': reset_link,
+                }, HTTP_200_OK)
+            else:
+                return Response({'error': error_msg}, HTTP_400_BAD_REQUEST)
+
+
+class PasswordResetConfirmView(GenericAPIView):
+    """Password reset step 3: uidb64 + token + new_password → reset password."""
+    serializer_class = PasswordResetConfirmSerializer
+
+    def post(self, request, uidb64=None, token=None, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid(raise_exception=True):
+            try:
+                uid = urlsafe_base64_decode(uidb64).decode()
+                user = User.objects.get(pk=uid)
+            except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+                user = None
+
+            if user is not None and account_activation_token.check_token(user, token):
+                phone_number, email = user.phone_number, user.email
+                verified_phone = request.session.get(f"password_reset_verified:{phone_number}")
+                verified_email = request.session.get(f"password_reset_verified:{email}")
+
+                if verified_phone or verified_email:
+                    new_password = serializer.validated_data['new_password']
+                    user.set_password(new_password)
+                    user.save()
+
+                    # Cleanup session
+                    for key in [
+                        f"password_reset_verified:{phone_number}",
+                        f"password_reset_verified:{email}",
+                    ]:
+                        if key in request.session:
+                            del request.session[key]
+
+                    new_token = _update_users_token(user.pk)
+                    return Response({
+                        'message': _('Password has been reset successfully!'),
+                        'new_token': new_token,
+                    }, HTTP_200_OK)
+                else:
+                    return Response({'error': _('Verification limit expired!')}, HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'error': _('Invalid reset link!')}, HTTP_400_BAD_REQUEST)
+
+
+# ==================== Countries ====================
 
 class CountriesView(APIView):
-    """List all countries with flags."""
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        countries = Countries.objects.all()
-        return Response(CountrySerializer(countries, many=True).data)
-
-
-class GuestTokenView(APIView):
-    """Generate anonymous token for guest players."""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        from apps.game.models import ConnectionHistory
-
-        anonym_token = str(uuid.uuid4())
-        connection = ConnectionHistory.objects.create(
-            anonym_token=anonym_token,
-            status=ConnectionHistory.Status.ONLINE,
-        )
-        return Response({
-            "token": anonym_token,
-            "connection_id": connection.pk,
-        })
+    """Get all countries list."""
+    @staticmethod
+    def get(request, *args, **kwargs):
+        countries = Countries.objects.values('title', 'code')
+        return Response(list(countries))
 
 
-class PasswordResetRequestView(APIView):
-    """Request password reset — sends SMS/email code."""
-    permission_classes = [AllowAny]
+# ==================== Anonymous token ====================
 
-    def post(self, request):
-        serializer = PasswordResetRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        phone = serializer.validated_data.get("phone_number")
-        email = serializer.validated_data.get("email")
-        identifier = phone or email
-
-        # Verify the account exists
-        if phone and not User.objects.filter(phone_number=phone).exists():
-            return Response(
-                {"error": "Account not found"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if email and not User.objects.filter(email=email).exists():
-            return Response(
-                {"error": "Account not found"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Check if code already sent
-        reset_key = f"reset_{identifier}"
-        if request.session.get(reset_key):
-            return Response(
-                {"error": "A verification code has already been sent to this data."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Generate reset code
-        import random
-        code = f"{random.randint(1000, 9999)}"
-        request.session[reset_key] = {"code": code}
-
-        if settings.DEBUG:
-            logger.info("DEBUG: Reset code for %s is %s", identifier, code)
-
-        return Response({"message": "Verification code sent"})
-
-
-class PasswordResetVerifyView(APIView):
-    """Verify password reset SMS/email code."""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = PasswordResetVerifySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        phone = serializer.validated_data.get("phone_number")
-        email = serializer.validated_data.get("email")
-        verification_code = serializer.validated_data["verification_code"]
-        identifier = phone or email
-
-        reset_key = f"reset_{identifier}"
-        session_data = request.session.get(reset_key)
-
-        if not session_data:
-            return Response(
-                {"error": "No reset pending for this identifier"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        stored_code = session_data.get("code", "")
-        if settings.DEBUG:
-            if verification_code != "0000" and verification_code != stored_code:
-                return Response(
-                    {"error": "Invalid verification code"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        else:
-            if verification_code != stored_code:
-                return Response(
-                    {"error": "Invalid verification code"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # Generate a reset token
-        from django.contrib.auth.tokens import default_token_generator
-        from django.utils.http import urlsafe_base64_encode
-        from django.utils.encoding import force_bytes
-
-        user = (
-            User.objects.get(phone_number=phone)
-            if phone
-            else User.objects.get(email=email)
-        )
-        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-
-        # Clean up session
-        del request.session[reset_key]
-        request.session.modified = True
-
-        return Response({
-            "reset_link": f"/api/users/reset/confirm/{uidb64}/{token}/",
-        })
-
-
-class PasswordResetConfirmView(APIView):
-    """Set new password using reset token."""
-    permission_classes = [AllowAny]
-
-    def post(self, request, uidb64, token):
-        from django.contrib.auth.tokens import default_token_generator
-        from django.utils.http import urlsafe_base64_decode
-
-        serializer = PasswordResetConfirmSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        try:
-            uid = urlsafe_base64_decode(uidb64).decode()
-            user = User.objects.get(pk=uid)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            return Response(
-                {"error": "Invalid reset link"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not default_token_generator.check_token(user, token):
-            return Response(
-                {"error": "Invalid or expired reset link"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        user.set_password(serializer.validated_data["new_password"])
-        user.save(update_fields=["password"])
-
-        # Issue new token
-        Token.objects.filter(user=user).delete()
-        new_token = Token.objects.create(user=user)
-
-        return Response({
-            "new_token": new_token.key,
-            "message": "Password reset successful",
-        })
+class AnonymousTokenView(APIView):
+    """Generate a unique token for anonymous users."""
+    def get(self, request, *args, **kwargs):
+        token = token_urlsafe(32)
+        return JsonResponse({'token': token})

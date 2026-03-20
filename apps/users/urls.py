@@ -1,45 +1,53 @@
-"""User URL configuration — matching v1 API paths."""
+"""User URL configuration — matching v1 URL paths exactly."""
 from django.urls import path
 
 from apps.users.views import (
-    RegisterView,
-    SMSVerifyView,
+    SMSRequestView,
+    SMSVerificationView,
     LoginView,
-    ProfileView,
+    CheckExistingAccountByNumberOrEmail,
+    CheckExistingAccountByUsername,
+    AnonymousTokenView,
+    UserUpdateView,
+    UserDetailAPIView,
     ChangePasswordView,
-    CheckAccountView,
-    CheckUsernameView,
+    CheckPasswordView,
     CountriesView,
-    GuestTokenView,
     PasswordResetRequestView,
-    PasswordResetVerifyView,
+    PasswordResetVerificationView,
     PasswordResetConfirmView,
 )
 
 urlpatterns = [
-    # Registration (v1 parity: /register/ + /sms/)
-    path("register/", RegisterView.as_view(), name="register"),
-    path("sms/", SMSVerifyView.as_view(), name="sms-verify"),
+    # Registration (v1 parity)
+    path('register/', SMSRequestView.as_view(), name='register-request'),
+    path('sms/', SMSVerificationView.as_view(), name='register-verification'),
 
     # Login
-    path("login/", LoginView.as_view(), name="login"),
+    path('login/', LoginView.as_view(), name='login'),
 
-    # Profile
-    path("profile/", ProfileView.as_view(), name="profile"),
-    path("change-password/", ChangePasswordView.as_view(), name="change-password"),
+    # Check
+    path('check/', CheckExistingAccountByNumberOrEmail.as_view(), name='check-existing-number'),
+    path('check/<str:username>/', CheckExistingAccountByUsername.as_view(), name='check-existing-username'),
 
-    # Check account existence
-    path("check/", CheckAccountView.as_view(), name="check-account"),
-    path("check/<str:username>/", CheckUsernameView.as_view(), name="check-username"),
+    # Reset password
+    path('reset/account/', PasswordResetRequestView.as_view(), name='password_reset_request'),
+    path('reset/sms/', PasswordResetVerificationView.as_view(), name='password_reset_verification'),
+    path('reset/confirm/<uidb64>/<token>/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
 
-    # Password reset
-    path("reset/account/", PasswordResetRequestView.as_view(), name="reset-request"),
-    path("reset/sms/", PasswordResetVerifyView.as_view(), name="reset-verify"),
-    path("reset/confirm/<uidb64>/<token>/", PasswordResetConfirmView.as_view(), name="reset-confirm"),
+    # Generate token for anonymous users
+    path('generate_token/', AnonymousTokenView.as_view(), name='token-anonymous'),
 
-    # Countries
-    path("countries/", CountriesView.as_view(), name="countries"),
+    # Update user
+    path('user/update/', UserUpdateView.as_view(), name='user-update'),
+    path('user/update/password/', ChangePasswordView.as_view(), name='update-password'),
 
-    # Anonymous token
-    path("guest/", GuestTokenView.as_view(), name="guest-token"),
+    # Check current password
+    path('check/password/mine/', CheckPasswordView.as_view(), name='check-password'),
+
+    # Get all countries
+    path('countries/', CountriesView.as_view(), name='countries'),
+
+    # Get profile information
+    path('get-profile/', UserDetailAPIView.as_view(), name='user_detail'),
 ]

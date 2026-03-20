@@ -15,6 +15,7 @@ class GameTypes(models.Model):
     class Meta:
         verbose_name = "Game Type"
         verbose_name_plural = "Game Types"
+        ordering = ["title"]
 
     def __str__(self):
         return self.title

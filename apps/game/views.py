@@ -31,7 +31,7 @@ class GameTypesView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        game_types = GameTypes.objects.prefetch_related("times").all()
+        game_types = GameTypes.objects.prefetch_related("time_controls").all()
         return Response(GameTypesSerializer(game_types, many=True).data)
 
 

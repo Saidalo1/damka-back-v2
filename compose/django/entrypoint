@@ -1,0 +1,36 @@
+#!/bin/bash
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Wait for PostgreSQL to be ready
+python << END
+import sys
+import time
+
+import psycopg2
+
+suggest_unrecoverable_after = 30
+start = time.time()
+
+while True:
+    try:
+        psycopg2.connect(
+            dbname="${POSTGRES_DB:-damka_v2}",
+            user="${POSTGRES_USER:-postgres}",
+            password="${POSTGRES_PASSWORD:-postgres}",
+            host="${POSTGRES_HOST:-postgres}",
+            port="${POSTGRES_PORT:-5432}",
+        )
+        break
+    except psycopg2.OperationalError as error:
+        sys.stderr.write("Waiting for PostgreSQL to become available...\n")
+        if time.time() - start > suggest_unrecoverable_after:
+            sys.stderr.write(f"This is taking longer than expected. Error: {error}\n")
+        time.sleep(1)
+
+END
+
+>&2 echo 'PostgreSQL is available'
+
+exec "$@"

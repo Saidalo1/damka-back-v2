@@ -53,22 +53,17 @@ VERIFICATION_CODE_TTL = 300
 
 # ---------- Helpers ----------
 
-def _get_session_key(identifier: str) -> str:
-    """Session key for SMS verification data."""
-    return f"sms_{identifier}"
-
-
 def _store_sms_data(session, identifier: str, code: str, extra: dict = None):
-    """Store SMS verification code + extra data in session."""
+    """Store SMS verification code + extra data in session (keyed by raw identifier like v1 Redis)."""
     data = {'code': code}
     if extra:
         data.update(extra)
-    session[_get_session_key(identifier)] = dumps(data)
+    session[identifier] = dumps(data)
 
 
 def _get_sms_data(session, identifier: str) -> dict | None:
     """Retrieve SMS verification data from session."""
-    raw = session.get(_get_session_key(identifier))
+    raw = session.get(identifier)
     if raw:
         return loads(raw)
     return None
@@ -76,9 +71,8 @@ def _get_sms_data(session, identifier: str) -> dict | None:
 
 def _clear_sms_data(session, identifier: str):
     """Remove SMS verification data from session."""
-    key = _get_session_key(identifier)
-    if key in session:
-        del session[key]
+    if identifier in session:
+        del session[identifier]
 
 
 def _send_sms_code(phone_number: str, code: str):
@@ -204,7 +198,7 @@ class SMSVerificationView(CreateAPIView):
                 user.set_password(sms_data.get('password'))
                 user.save()
 
-                token, _ = Token.objects.get_or_create(user=user)
+                token, created = Token.objects.get_or_create(user=user)
                 _clear_sms_data(request.session, identifier)
 
                 return Response({
@@ -236,7 +230,7 @@ class LoginView(GenericAPIView):
                 user = authenticate(email=email, password=password)
 
             if user:
-                token, _ = Token.objects.get_or_create(user=user)
+                token, created = Token.objects.get_or_create(user=user)
                 return Response({
                     "token": token.key,
                     "message": _("Successful"),

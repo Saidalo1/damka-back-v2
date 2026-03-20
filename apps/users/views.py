@@ -70,13 +70,16 @@ class SMSVerifyView(APIView):
         code = serializer.validated_data["code"]
         password = serializer.validated_data["password"]
 
-        # TODO: Verify code from Redis
-        # For now, accept any code in DEBUG mode
+        # In DEBUG mode, accept any code for local development
+        # In production, verify code from Redis/SMS service
         if not settings.DEBUG:
+            # TODO: Verify code from Redis
             return Response(
                 {"error": "SMS verification not implemented yet"},
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
+        # DEBUG: any code is accepted (e.g. "0000")
+        logger.info("DEBUG: SMS code '%s' accepted for %s", code, phone)
 
         # Create user
         user = User.objects.create_user(

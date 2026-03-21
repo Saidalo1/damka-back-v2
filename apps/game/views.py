@@ -8,6 +8,7 @@ Endpoints:
 """
 import logging
 
+from django.conf import settings
 from django.core.paginator import Paginator
 from django.db.models import Q
 from django.utils.timezone import now
@@ -57,13 +58,16 @@ class LeaderboardView(APIView):
         per_page = min(int(request.query_params.get("per_page", 20)), 50)
 
         rating_field = f"{mode}_rating"
+        updated_field = f"{mode}_updated_at"
 
-        # Get all users ordered by rating
+        # Get all users ordered by rating (matching v1 SQL ordering)
         users = User.objects.filter(
             is_active=True, is_staff=False,
-        ).order_by(f"-{rating_field}", "username").values(
-            "id", "username", rating_field,
-            "country__title", "country__code", "country__flag",
+        ).order_by(
+            f"-{rating_field}", f"-{updated_field}", "date_joined", "-last_login",
+        ).values(
+            "id", "username", "avatar", rating_field,
+            "country__id", "country__title", "country__code",
         )
 
         paginator = Paginator(users, per_page)
@@ -71,29 +75,65 @@ class LeaderboardView(APIView):
 
         # Build leaderboard entries with place numbers
         start_place = (page_num - 1) * per_page + 1
-        ratings = []
+        results = []
         current_user = request.user
 
         for i, entry in enumerate(page):
-            country = None
-            if entry.get("country__title"):
-                country = {
-                    "title": entry["country__title"],
-                    "code": entry.get("country__code", ""),
-                    "flag": entry.get("country__flag", ""),
-                }
+            code = entry.get("country__code", "")
+            province = {
+                "id": entry.get("country__id"),
+                "title": entry.get("country__title", ""),
+                "code": code,
+                "flag": settings.STATIC_URL + f"flag/{code.lower()}.gif" if code else "",
+            }
+
+            # Build avatar URL (manifestation)
+            avatar = entry.get("avatar")
+            manifestation = None
+            if avatar and avatar != "":
+                manifestation = settings.MEDIA_URL + avatar
 
             is_current_user = (
                 current_user.is_authenticated and entry["id"] == current_user.id
             )
 
-            ratings.append({
+            results.append({
                 "id": entry["id"],
                 "username": entry["username"],
+                "manifestation": manifestation,
                 "rating": entry[rating_field],
                 "place": start_place + i,
-                "country": country,
+                "province": province,
                 "is_you": is_current_user,
+            })
+
+        # Top 3 players (separate query, matching v1)
+        top_three_qs = User.objects.filter(
+            is_active=True, is_staff=False,
+        ).order_by(
+            f"-{rating_field}", f"-{updated_field}", "date_joined", "-last_login",
+        ).values(
+            "id", "username", "avatar", rating_field,
+            "country__id", "country__title", "country__code",
+        )[:3]
+
+        first_three_players = []
+        for i, entry in enumerate(top_three_qs):
+            code = entry.get("country__code", "")
+            avatar = entry.get("avatar")
+            first_three_players.append({
+                "id": entry["id"],
+                "username": entry["username"],
+                "manifestation": settings.MEDIA_URL + avatar if avatar and avatar != "" else None,
+                "rating": entry[rating_field],
+                "place": i + 1,
+                "province": {
+                    "id": entry.get("country__id"),
+                    "title": entry.get("country__title", ""),
+                    "code": code,
+                    "flag": settings.STATIC_URL + f"flag/{code.lower()}.gif" if code else "",
+                },
+                "is_you": current_user.is_authenticated and entry["id"] == current_user.id,
             })
 
         # Stats
@@ -110,21 +150,24 @@ class LeaderboardView(APIView):
                 **{f"{rating_field}__gt": user_rating},
             ).count() + 1
 
+            user_avatar = current_user.avatar.name if current_user.avatar else None
             current_user_data = {
                 "id": current_user.id,
                 "username": current_user.username,
+                "manifestation": settings.MEDIA_URL + user_avatar if user_avatar and user_avatar != "" else None,
                 "rating": user_rating,
                 "place": user_rank,
+                "is_you": True,
             }
 
         return Response({
-            "ratings": ratings,
+            "results": results,
+            "first_three_players": first_three_players,
             "current_user_rating": current_user_data,
-            "total_players_count": paginator.count,
-            "todays_games_count": todays_games,
-            "active_games_count": active_games,
-            "current_page": page_num,
+            "count": paginator.count,
             "total_pages": paginator.num_pages,
+            "todays_games_count": todays_games,
+            "current_games_count": active_games,
         })
 
 

@@ -1,89 +1,55 @@
-"""
-Users admin — Unfold-powered admin for User and Countries models.
+import uuid
 
-Replaces default UserAdmin with Unfold styling + proper field layout.
-"""
-from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from django.utils.html import format_html
+from django.contrib.admin import register
+from django.contrib.auth.admin import UserAdmin
+from django.utils.translation import gettext_lazy as _
 from unfold.admin import ModelAdmin
-from unfold.forms import AdminPasswordChangeForm, UserChangeForm, UserCreationForm
 
+from apps.users.forms import CustomUserCreationForm
 from apps.users.models import User, Countries
 
 
-@admin.register(User)
-class UserAdmin(BaseUserAdmin, ModelAdmin):
-    """Custom user admin with ELO ratings and avatar preview."""
-    form = UserChangeForm
-    add_form = UserCreationForm
-    change_password_form = AdminPasswordChangeForm
-
-    list_display = (
-        "username", "phone_number",
-        "bullet_rating", "blitz_rating", "rapid_rating",
-        "avatar_preview", "is_active", "date_joined",
-    )
-    list_filter = ("is_active", "is_staff", "country")
-    search_fields = ("username", "phone_number", "email")
-    ordering = ("-date_joined",)
-    list_per_page = 25
-
-    fieldsets = (
-        ("Account", {
-            "fields": ("username", "phone_number", "email", "password"),
-        }),
-        ("Personal Info", {
-            "fields": ("first_name", "last_name", "avatar", "country"),
-        }),
-        ("ELO Ratings", {
+@register(User)
+class CustomUserAdmin(ModelAdmin, UserAdmin):
+    add_form = CustomUserCreationForm
+    fieldsets = (None, {"fields": ('phone_number', 'username')}), (
+        _("Personal info"), {"fields": ("first_name", "last_name", "email", "country", "avatar")}), (
+        _("Permissions"),
+        {
             "fields": (
-                ("bullet_rating", "blitz_rating", "rapid_rating"),
-                ("bullet_updated_at", "blitz_updated_at", "rapid_updated_at"),
+                "is_active",
+                "is_staff",
+                "is_superuser",
+                "groups",
+                "user_permissions",
             ),
-        }),
-        ("Integrations", {
-            "fields": ("chat_id",),
-            "classes": ("collapse",),
-        }),
-        ("Permissions", {
-            "fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions"),
-            "classes": ("collapse",),
-        }),
-        ("Timestamps", {
-            "fields": ("last_login", "date_joined"),
-        }),
-    )
+        },
+    ), (_("Important dates"), {"fields": ("last_login", "date_joined")}), (
+        _("Game information"), {"fields": ('bullet_rating', 'blitz_rating', 'rapid_rating')})
 
     add_fieldsets = (
-        (None, {
-            "classes": ("wide",),
-            "fields": ("username", "phone_number", "password1", "password2"),
-        }),
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": fieldsets[0][1]['fields'][:4] + fieldsets[1][1]['fields'] + ("password1", "password2"),
+            },
+        ),
     )
 
-    @admin.display(description="Avatar")
-    def avatar_preview(self, obj):
-        if obj.avatar:
-            return format_html(
-                '<img src="{}" style="height:28px; width:28px; border-radius:50%; object-fit:cover;" />',
-                obj.avatar.url,
-            )
-        return "—"
+    list_display = 'username', 'first_name', 'last_name', 'phone_number', 'is_active', 'is_staff', 'is_superuser'
+    readonly_fields = 'date_joined', 'last_login'
+
+    def save_model(self, request, obj, form, change):
+        if not obj.username:
+            unique_username = str(uuid.uuid4().hex)
+            while User.objects.filter(username=unique_username).exists():
+                unique_username = str(uuid.uuid4().hex)
+            obj.username = unique_username
+        super().save_model(request, obj, form, change)
 
 
-@admin.register(Countries)
+@register(Countries)
 class CountriesAdmin(ModelAdmin):
-    """Admin for country reference data."""
-    list_display = ("title", "code", "flag_preview")
-    search_fields = ("title", "code")
-    list_per_page = 50
-    ordering = ("title",)
-
-    @admin.display(description="Flag")
-    def flag_preview(self, obj):
-        if obj.flag:
-            return format_html(
-                '<img src="{}" style="height:20px;" />', obj.flag.url,
-            )
-        return "—"
+    list_display = 'title', 'code'
+    search_fields = 'title', 'code'

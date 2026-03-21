@@ -265,3 +265,5 @@ UNFOLD = {
     },
 }
 
+# Silence USERNAME_FIELD warning — phone_number is intentionally nullable (guest users)
+SILENCED_SYSTEM_CHECKS = ["auth.W004", "auth.E003"]

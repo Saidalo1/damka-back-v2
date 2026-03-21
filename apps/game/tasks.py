@@ -1,8 +1,9 @@
 """
-Celery tasks for game timer enforcement.
+Celery tasks for game timer enforcement and matchmaking.
 
 check_first_move — cancels game if first player doesn't move within timeout.
 check_move_timeout — ends game when a player's time runs out.
+check_matchmaking_timeout — removes player from queue after timeout.
 """
 import logging
 
@@ -165,8 +166,8 @@ def _calculate_timeout_ratings(game, mode: str) -> dict:
     if not white or not black:
         return {}
 
-    white_rating = white.get_rating_for_mode(mode)
-    black_rating = black.get_rating_for_mode(mode)
+    white_rating = getattr(white, f"{mode}_rating", 1600)
+    black_rating = getattr(black, f"{mode}_rating", 1600)
 
     if game.color_win == 1:  # Black wins
         white_new = calculate_elo_rating(white_rating, black_rating, 0)
@@ -185,3 +186,45 @@ def _calculate_timeout_ratings(game, mode: str) -> dict:
         "white": {"old": white_rating, "new": white_new, "diff": white_new - white_rating},
         "black": {"old": black_rating, "new": black_new, "diff": black_new - black_rating},
     }
+
+
+@app.task(name="game.check_matchmaking_timeout")
+def check_matchmaking_timeout(token: str, game_type_id: int):
+    """
+    Remove player from matchmaking queue after timeout.
+
+    Called via apply_async(eta=...) when a player starts searching.
+    If the player is still in the queue, removes them and sends a timeout event.
+    """
+    import redis as sync_redis
+    from django.conf import settings as django_settings
+
+    redis_url = getattr(django_settings, "REDIS_URL", "redis://localhost:6379/0")
+    redis_conn = sync_redis.from_url(redis_url, decode_responses=True)
+
+    key = f"matchmaking:{game_type_id}:{token}"
+    data = redis_conn.get(key)
+
+    if data is None:
+        return  # Player already matched or cancelled
+
+    import json
+    player_data = json.loads(data)
+    channel_name = player_data.get("channel_name")
+
+    # Remove from queue
+    redis_conn.delete(key)
+
+    logger.info("Matchmaking timeout for token=%s, game_type=%d", token[:10], game_type_id)
+
+    # Notify player via channel layer
+    if channel_name:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.send)(channel_name, {
+            "type": "matchmaking.timeout",
+            "data": {
+                "event": "timeout",
+                "message": "No opponent found. Try again.",
+            },
+        })
+

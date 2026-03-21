@@ -8,12 +8,12 @@ import logging
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from apps.game.consumers.mixins.chat import ChatMixin
-from apps.game.consumers.mixins.connection import ConnectionMixin
-from apps.game.consumers.mixins.game_end import GameEndMixin
-from apps.game.consumers.mixins.move import MoveMixin
-from apps.game.consumers.mixins.rematch import RematchMixin
-from apps.game.consumers.mixins.timer import TimerMixin
+from apps.game.consumers.game.mixins.chat import ChatMixin
+from apps.game.consumers.game.mixins.connection import ConnectionMixin
+from apps.game.consumers.game.mixins.game_end import GameEndMixin
+from apps.game.consumers.game.mixins.move import MoveMixin
+from apps.game.consumers.game.mixins.rematch import RematchMixin
+from apps.game.consumers.game.mixins.timer import TimerMixin
 
 logger = logging.getLogger(__name__)
 

@@ -24,10 +24,17 @@ async def test_matchmaking(token: str, game_type_id: int, host: str = "localhost
 
     async with websockets.connect(uri) as ws:
         # Send search request
-        await ws.send(json.dumps({
+        # Backend requires rating_level for guest tokens (len >= 43)
+        is_guest = len(token) >= 43
+        search_msg = {
             "type": "search",
-            "message": {"game_type_id": game_type_id},
-        }))
+            "message": {
+                "game_type_id": game_type_id,
+            },
+        }
+        if is_guest:
+            search_msg["message"]["rating_level"] = 3  # ~1200 rating
+        await ws.send(json.dumps(search_msg))
 
         try:
             while True:

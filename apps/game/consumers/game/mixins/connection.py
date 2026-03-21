@@ -46,8 +46,8 @@ class ConnectionMixin:
         self.game_group = str(self.game.id)
         await self.channel_layer.group_add(self.game_group, self.channel_name)
 
-        # Initialize board from FEN
-        fen = self.game.fen
+        # Initialize board from FEN (None → startpos)
+        fen = self.game.fen or "startpos"
         self.board = create_board(fen)
 
         # Check if both players connected → start game
@@ -69,7 +69,7 @@ class ConnectionMixin:
 
         await self.send_json({
             "event": "init",
-            "fen": self.game.fen,
+            "fen": self.board.fen,
             "turn": self.game.turn,
             "users": users,
             "times": {
@@ -151,9 +151,8 @@ class ConnectionMixin:
                 users.append({
                     "id": user.id,
                     "username": user.username,
-                    "rating": user.get_rating_for_mode(
-                        self.game.type_of_game.type.separate_var
-                    ) if self.game.type_of_game else 1600,
+                    "rating": getattr(user, f"{self.game.type_of_game.type.separate_var}_rating", 1600)
+                    if self.game.type_of_game else 1600,
                     "avatar": user.avatar.url if user.avatar else None,
                     "is_you": color == self.player_color,
                     "color": color,

@@ -159,8 +159,8 @@ class MoveMixin:
         self.game = Game.objects.select_related(
             "white", "black", "type_of_game", "type_of_game__type",
         ).get(id=self.game.id)
-        # Rebuild board from latest FEN
-        self.board = create_board(self.game.fen)
+        # Rebuild board from latest FEN (None → startpos for new games)
+        self.board = create_board(self.game.fen or "startpos")
 
     @database_sync_to_async
     def _update_game_after_move(

@@ -62,15 +62,21 @@ async def find_opponent(redis_conn, game_type_id: int, my_token: str, my_rating:
     return None
 
 
-async def add_to_queue(redis_conn, game_type_id: int, token: str, rating: int, channel_name: str) -> None:
-    """Add a player to the matchmaking queue in Redis."""
+async def add_to_queue(redis_conn, game_type_id: int, token: str, rating: int,
+                       channel_name: str, timeout: int = 303) -> None:
+    """Add a player to the matchmaking queue in Redis.
+
+    Args:
+        timeout: TTL in seconds, slightly longer than SEARCH_MATCH_TIMEOUT
+                 to prevent stale keys if Celery/disconnect cleanup fails.
+    """
     key = f"matchmaking:{game_type_id}:{token}"
     data = json.dumps({
         "rating": rating,
         "token": token,
         "channel_name": channel_name,
     })
-    await redis_conn.set(key, data)
+    await redis_conn.setex(key, timeout, data)
 
 
 async def remove_from_queue(redis_conn, game_type_id: int, token: str) -> None:

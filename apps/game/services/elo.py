@@ -57,8 +57,8 @@ def update_ratings_after_game(game) -> dict:
     # Determine the game mode (bullet/blitz/rapid)
     mode = game.type_of_game.type.separate_var
 
-    white_rating = white_player.get_rating_for_mode(mode)
-    black_rating = black_player.get_rating_for_mode(mode)
+    white_rating = getattr(white_player, f"{mode}_rating", 1600)
+    black_rating = getattr(black_player, f"{mode}_rating", 1600)
 
     # Determine scores
     if game.color_win == 2:  # White wins

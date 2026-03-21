@@ -6,5 +6,12 @@ set -o nounset
 python manage.py collectstatic --noinput
 python manage.py migrate --noinput
 
-# Use Daphne (not runserver!) for WebSocket support
-daphne -b 0.0.0.0 -p 8000 config.asgi:application
+# Use watchfiles for auto-reload during development (Daphne has no --reload)
+# Falls back to plain Daphne if watchfiles is not installed
+if python -c "import watchfiles" 2>/dev/null; then
+    echo "Starting Daphne with auto-reload (watchfiles)..."
+    watchfiles --filter python "daphne -b 0.0.0.0 -p 8000 config.asgi:application"
+else
+    echo "Starting Daphne (no auto-reload — install watchfiles for dev)..."
+    daphne -b 0.0.0.0 -p 8000 config.asgi:application
+fi

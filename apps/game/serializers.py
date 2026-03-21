@@ -15,11 +15,11 @@ class GameTypesTimeSerializer(serializers.ModelSerializer):
 
 class GameTypesSerializer(serializers.ModelSerializer):
     """Game type (Bullet/Blitz/Rapid) with time control options."""
-    time_controls = GameTypesTimeSerializer(many=True, read_only=True)
+    times = GameTypesTimeSerializer(many=True, read_only=True, source="time_controls")
 
     class Meta:
         model = GameTypes
-        fields = ["id", "title", "icon", "separate_var", "time_controls"]
+        fields = ["id", "title", "icon", "separate_var", "times"]
 
 
 class ActiveGameSerializer(serializers.ModelSerializer):

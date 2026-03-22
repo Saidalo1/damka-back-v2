@@ -53,6 +53,8 @@ class ConnectionMixin:
         # V1 logic: for matchmaking, mark started immediately
         if not self.game.has_started:
             await self._check_game_start()
+            # Schedule first-move timer for white (first turn)
+            await self.start_first_move_timer()
 
         return True
 
@@ -123,6 +125,19 @@ class ConnectionMixin:
                     await database_sync_to_async(
                         self.game.save
                     )(update_fields=["all_players_left"])
+
+                    # Notify remaining player that opponent left
+                    await self.channel_layer.group_send(
+                        self.game_group,
+                        {
+                            "type": "game.message",
+                            "data": {
+                                "event": "opponent_disconnected",
+                                "color": self.player_color,
+                            },
+                            "target_color": self.opponent_color,
+                        },
+                    )
 
         if hasattr(self, "game_group"):
             await self.channel_layer.group_discard(self.game_group, self.channel_name)

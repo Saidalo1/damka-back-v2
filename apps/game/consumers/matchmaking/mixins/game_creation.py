@@ -28,6 +28,7 @@ class GameCreationMixin:
         game = Game(
             type_of_game=game_type,
             type=GameTypeChoices.MATCHMAKING,
+            turn=ColorChoices.white.value,  # White moves first in Russian draughts
             increment=game_type.increment,
             initial_time_white=time_value,
             initial_time_black=time_value,

@@ -70,7 +70,7 @@ class ConnectionMixin:
         await self.send_json({
             "event": "init",
             "fen": self.board.fen,
-            "turn": self.game.turn,
+            "turn": self.game.turn if self.game.turn is not None else get_turn_color(self.board),
             "users": users,
             "times": {
                 "white": int(self.game.remaining_time_white or 0),

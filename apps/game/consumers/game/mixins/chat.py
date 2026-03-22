@@ -68,8 +68,11 @@ class ChatMixin:
                 message=message,
             )
         else:
-            # For anonymous users, use connection_history
-            connection = getattr(self, "current_connection", None)
+            # For anonymous users, use connection from ConnectionMixin
+            connection = getattr(self, "connection", None)
+            if connection is None:
+                logger.warning("Chat: no connection for guest sender, skipping save")
+                return {"timestamp": str(timezone.now()), "sender_color": self.player_color}
             chat = Chat.objects.create(
                 game=self.game,
                 guest_sender=connection,

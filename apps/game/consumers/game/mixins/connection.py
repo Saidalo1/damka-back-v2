@@ -94,7 +94,36 @@ class ConnectionMixin:
         })
 
     async def handle_disconnect(self):
-        """Clean up on player disconnect."""
+        """Clean up on player disconnect — V1 parity.
+
+        Handles:
+        1. Revoke pending timer tasks (so they don't fire on ended game)
+        2. Mark all_players_left if game is ended (allows cleanup)
+        3. Leave channel group
+        """
+        if hasattr(self, "game") and self.game:
+            # Refresh from DB to get latest state (game may have ended)
+            try:
+                await database_sync_to_async(self.game.refresh_from_db)()
+            except Exception:
+                pass
+
+            # Revoke any active timer tasks
+            if hasattr(self, "cancel_current_timer"):
+                try:
+                    await self.cancel_current_timer()
+                except Exception:
+                    pass
+
+            # V1 parity: if game ended and player is a participant,
+            # mark all_players_left so the game room is cleaned up
+            if self.game.has_ended and not self.game.all_players_left:
+                if hasattr(self, "player_color") and self.player_color is not None:
+                    self.game.all_players_left = True
+                    await database_sync_to_async(
+                        self.game.save
+                    )(update_fields=["all_players_left"])
+
         if hasattr(self, "game_group"):
             await self.channel_layer.group_discard(self.game_group, self.channel_name)
 

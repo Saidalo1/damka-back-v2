@@ -129,10 +129,16 @@ class GameEndMixin:
 
     @database_sync_to_async
     def _finalize_game(self, winner_color: int) -> dict:
-        """Mark game as ended, calculate ratings."""
+        """Mark game as ended, calculate ratings, record finish time."""
+        from django.utils import timezone
+
         self.game.has_ended = True
         self.game.color_win = winner_color
-        self.game.save(update_fields=["has_ended", "color_win"])
+        self.game.finished_time = timezone.now()
+
+        self.game.save(update_fields=[
+            "has_ended", "color_win", "finished_time",
+        ])
 
         # Calculate ELO rating changes (service handles all validation)
         return update_ratings_after_game(self.game)

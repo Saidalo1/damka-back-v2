@@ -50,25 +50,12 @@ class ConnectionMixin:
         fen = self.game.fen or "startpos"
         self.board = create_board(fen)
 
-        # Check if both players connected → start game
-        was_started = self.game.has_started
-        await self._check_game_start()
-
-        # If game just transitioned to started, notify the first player
-        if not was_started and self.game.has_started:
-            await self.channel_layer.group_send(
-                self.game_group,
-                {
-                    "type": "game.message",
-                    "data": {
-                        "event": "game_started",
-                        "has_started": True,
-                    },
-                    "broadcast": True,
-                },
-            )
+        # V1 logic: for matchmaking, mark started immediately
+        if not self.game.has_started:
+            await self._check_game_start()
 
         return True
+
 
     async def send_initial_state(self):
         """Send full game state to the connecting player (event: init)."""
@@ -101,7 +88,7 @@ class ConnectionMixin:
                 "black": self.game.captured_pieces_count_by_black,
             },
             "possible_moves": possible_moves,
-            "has_started": self.game.has_started,
+            "has_started": bool(self.game.last_move),  # V1: True when first move made
             "has_ended": self.game.has_ended,
             "session_score": session_score,
         })
@@ -146,36 +133,16 @@ class ConnectionMixin:
     @database_sync_to_async
     def _check_game_start(self):
         """
-        Track connected players and start game when both are in.
+        V1 logic: for matchmaking games, mark started immediately.
 
-        Uses a simple counter: only sets has_started=True on second connection.
-        On first connection, game remains in waiting state.
+        Sets has_started, turn, and last_move_time.
+        Mirrors V1's update_game_started_status for MATCHMAKING type.
         """
-        if self.game.has_started:
-            return  # Already started (reconnect scenario)
+        self.game.has_started = True
+        self.game.turn = get_turn_color(self.board)  # WHITE moves first
+        self.game.last_move_time = timezone.now()
+        self.game.save(update_fields=["has_started", "turn", "last_move_time"])
 
-        # Count connected players using Redis
-        import redis
-        from django.conf import settings
-
-        redis_conn = redis.from_url(
-            getattr(settings, "CHANNEL_LAYERS", {})
-            .get("default", {})
-            .get("CONFIG", {})
-            .get("hosts", ["redis://localhost:6379"])[0]
-        )
-        counter_key = f"game_connected:{self.game.id}"
-
-        # Increment connected count with short expiry
-        count = redis_conn.incr(counter_key)
-        redis_conn.expire(counter_key, 600)  # 10 min expiry
-
-        if count >= 2:
-            # Both players connected — start the game!
-            self.game.has_started = True
-            self.game.last_move_time = timezone.now()
-            self.game.save(update_fields=["has_started", "last_move_time"])
-            redis_conn.delete(counter_key)
 
 
     @database_sync_to_async

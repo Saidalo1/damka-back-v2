@@ -45,8 +45,12 @@ def get_turn_color(board: RussianBoard) -> int:
 
 
 def get_legal_moves_as_lists(board: RussianBoard) -> list[list[int]]:
-    """Get legal moves as list of square_list arrays for frontend."""
-    return [move.square_list for move in board.legal_moves]
+    """Get legal moves as 1-indexed square lists for frontend.
+
+    py-draughts uses 0-indexed squares (0-31),
+    PDN notation/frontend uses 1-indexed (1-32).
+    """
+    return [[sq + 1 for sq in move.square_list] for move in board.legal_moves]
 
 
 def make_move(board: RussianBoard, square_list: list[int]) -> dict:
@@ -63,17 +67,23 @@ def make_move(board: RussianBoard, square_list: list[int]) -> dict:
     Raises:
         ValueError: If the move is not legal.
     """
+    # Frontend sends 1-indexed (PDN), py-draughts uses 0-indexed → subtract 1
+    internal_list = [sq - 1 for sq in square_list]
+
     # Find the matching legal move
     legal_moves = board.legal_moves
     target_move = None
 
     for move in legal_moves:
-        if move.square_list == square_list:
+        if move.square_list == internal_list:
             target_move = move
             break
 
     if target_move is None:
-        raise ValueError(f"Illegal move: {square_list}. Legal moves: {[m.square_list for m in legal_moves]}")
+        raise ValueError(
+            f"Illegal move: {square_list} (internal: {internal_list}). "
+            f"Legal moves: {[m.square_list for m in legal_moves]}"
+        )
 
     # Check if it's a capture
     is_capture = len(target_move.captured_list) > 0

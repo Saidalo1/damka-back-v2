@@ -116,8 +116,9 @@ class ConnectionMixin:
         """Determine which color belongs to the connecting player."""
         user = self.scope.get("user")
         anonym_token = self.scope.get("anonym_token")
+        is_guest = self.scope.get("is_guest")
 
-        if user and not self.scope.get("is_guest"):
+        if user and not is_guest:
             if self.game.white == user:
                 return ColorChoices.white
             elif self.game.black == user:
@@ -128,6 +129,7 @@ class ConnectionMixin:
             elif self.game.black_anonym and self.game.black_anonym.anonym_token == anonym_token:
                 return ColorChoices.black
 
+        logger.warning("Could not determine player color for game %s", self.game.id)
         return None
 
     @database_sync_to_async

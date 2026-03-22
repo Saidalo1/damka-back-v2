@@ -51,7 +51,22 @@ class ConnectionMixin:
         self.board = create_board(fen)
 
         # Check if both players connected → start game
+        was_started = self.game.has_started
         await self._check_game_start()
+
+        # If game just transitioned to started, notify the first player
+        if not was_started and self.game.has_started:
+            await self.channel_layer.group_send(
+                self.game_group,
+                {
+                    "type": "game.message",
+                    "data": {
+                        "event": "game_started",
+                        "has_started": True,
+                    },
+                    "broadcast": True,
+                },
+            )
 
         return True
 
@@ -130,11 +145,38 @@ class ConnectionMixin:
 
     @database_sync_to_async
     def _check_game_start(self):
-        """If both players are connected, mark game as started."""
-        if not self.game.has_started:
+        """
+        Track connected players and start game when both are in.
+
+        Uses a simple counter: only sets has_started=True on second connection.
+        On first connection, game remains in waiting state.
+        """
+        if self.game.has_started:
+            return  # Already started (reconnect scenario)
+
+        # Count connected players using Redis
+        import redis
+        from django.conf import settings
+
+        redis_conn = redis.from_url(
+            getattr(settings, "CHANNEL_LAYERS", {})
+            .get("default", {})
+            .get("CONFIG", {})
+            .get("hosts", ["redis://localhost:6379"])[0]
+        )
+        counter_key = f"game_connected:{self.game.id}"
+
+        # Increment connected count with short expiry
+        count = redis_conn.incr(counter_key)
+        redis_conn.expire(counter_key, 600)  # 10 min expiry
+
+        if count >= 2:
+            # Both players connected — start the game!
             self.game.has_started = True
             self.game.last_move_time = timezone.now()
             self.game.save(update_fields=["has_started", "last_move_time"])
+            redis_conn.delete(counter_key)
+
 
     @database_sync_to_async
     def _build_users_list(self) -> list[dict]:

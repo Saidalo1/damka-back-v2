@@ -115,8 +115,7 @@ class GameAdmin(ModelAdmin):
         }),
         ("Result", {
             "fields": (
-                "color_win", "authorized_winner", "guest_winner",
-                "rating_calculated",
+                "color_win", "rating_calculated",
             ),
         }),
         ("Timers", {

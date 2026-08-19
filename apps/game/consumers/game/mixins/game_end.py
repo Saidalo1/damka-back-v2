@@ -6,7 +6,7 @@ All game termination goes through a single _end_game() method.
 """
 import logging
 
-from channels.db import database_sync_to_async
+from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=False (concurrent DB)
 
 from shared.django import ColorChoices
 from apps.game.services.elo import update_ratings_after_game
@@ -32,6 +32,9 @@ class GameEndMixin:
         First call from a player → sets draw offer flag.
         Second call from opponent → accepts draw.
         """
+        # The opponent may have set their offer flag on a DIFFERENT consumer, so
+        # our in-memory game is stale — reload before reading the flags.
+        await self._refresh_game()
         if self.game.has_ended:
             return
 
@@ -62,6 +65,29 @@ class GameEndMixin:
                     self.game_group,
                     {"type": "game.message", "data": {"event": "draw_offer", "color": self.player_color}, "target_color": self.opponent_color},
                 )
+
+    async def handle_draw_decline(self, message=None):
+        """Decline the opponent's pending draw offer — clears it for both sides."""
+        await self._refresh_game()  # opponent's offer flag was set elsewhere
+        if self.game.has_ended:
+            return
+        opponent_offered = (
+            (self.opponent_color == ColorChoices.white and self.game.white_draw_offer)
+            or (self.opponent_color == ColorChoices.black and self.game.black_draw_offer)
+        )
+        if not opponent_offered:
+            return
+        await self._clear_draw_offers()
+        await self.channel_layer.group_send(
+            self.game_group,
+            {"type": "game.message", "data": {"event": "draw_declined"}, "broadcast": True},
+        )
+
+    @database_sync_to_async
+    def _clear_draw_offers(self):
+        self.game.white_draw_offer = False
+        self.game.black_draw_offer = False
+        self.game.save(update_fields=["white_draw_offer", "black_draw_offer"])
 
     async def _handle_game_over_by_board(self, winner_color: int | None):
         """Called when board.game_over is True (no legal moves or draw rule)."""
@@ -113,6 +139,11 @@ class GameEndMixin:
                     "rating": rating_changes.get(color_key, {}),
                 }
                 await self._send_to_player(color, player_data)
+            # Observers get the public game-over (no personalized rating).
+            await self.channel_layer.group_send(
+                self.game_group,
+                {"type": "game.broadcast", "data": game_over_data, "to_observers": True},
+            )
         else:
             # No rating change (private game or anon) — send same to both
             await self.channel_layer.group_send(
@@ -124,7 +155,9 @@ class GameEndMixin:
         await self.start_rematch_wait_timer()
 
     async def game_broadcast(self, event):
-        """Handle game.broadcast — send to all players in group."""
+        """Handle game.broadcast — to all, or observers-only when flagged."""
+        if event.get("to_observers") and not getattr(self, "is_observer", False):
+            return  # players already received their personalized copy
         await self.send_json(event["data"])
 
     @database_sync_to_async

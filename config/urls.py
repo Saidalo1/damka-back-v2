@@ -30,3 +30,9 @@ urlpatterns = [
 urlpatterns += staticfiles_urlpatterns()
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Django Debug Toolbar: local.py adds the middleware, but its namespace ('djdt')
+# must be registered here or EVERY response raises NoReverseMatch (which was
+# 500-ing the API, e.g. /api/game/types/). Guard on the app being installed.
+if settings.DEBUG and "debug_toolbar" in settings.INSTALLED_APPS:
+    urlpatterns += [path("__debug__/", include("debug_toolbar.urls"))]

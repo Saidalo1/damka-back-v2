@@ -188,6 +188,83 @@ def _calculate_timeout_ratings(game, mode: str) -> dict:
     }
 
 
+@app.task(name="game.check_abandonment")
+def check_abandonment(game_id: str, disconnected_color: int):
+    """Decide a game after a player disconnected and the grace elapsed.
+
+    Scheduled ~ABANDON_GRACE seconds after a player drops. Three outcomes:
+      * that player is back online  → do nothing (blip recovered);
+      * BOTH players still gone     → abort, no rating change;
+      * only they are still gone    → they forfeit, opponent wins (rated).
+    """
+    import redis as sync_redis
+    from django.conf import settings as django_settings
+
+    from apps.game.models import Game
+    from shared.django import ColorChoices
+
+    redis_url = getattr(django_settings, "REDIS_URL", "redis://localhost:6379/0")
+    redis_conn = sync_redis.from_url(redis_url, decode_responses=True)
+    online = redis_conn.smembers(f"game_online:{game_id}") or set()
+
+    if str(disconnected_color) in online:
+        return  # they reconnected within the grace — nothing to do
+
+    try:
+        game = Game.objects.select_related(
+            "white", "black", "type_of_game", "type_of_game__type",
+        ).get(id=game_id)
+    except (Game.DoesNotExist, ValueError):
+        return
+    if game.has_ended:
+        return
+
+    channel_layer = get_channel_layer()
+
+    if not online:
+        # Both players gone → abort, no rating.
+        game.has_ended = True
+        game.all_players_left = True
+        game.color_win = ColorChoices.cancelled
+        game.finished_time = timezone.now()
+        game.save(update_fields=(
+            "has_ended", "all_players_left", "color_win", "finished_time",
+        ))
+        if game.move_check_task_id:
+            app.control.revoke(str(game.move_check_task_id), terminate=True)
+        logger.info("Game %s aborted — both players left", game_id)
+        async_to_sync(channel_layer.group_send)(
+            str(game_id),
+            {"type": "game.message",
+             "data": {"event": "game_over", "winner": None, "reason": "aborted",
+                      "message": "Game aborted — both players left"},
+             "broadcast": True},
+        )
+        return
+
+    # Opponent is present, the dropped player never came back → they forfeit.
+    winner = (ColorChoices.white if disconnected_color == ColorChoices.black
+              else ColorChoices.black)
+    game.has_ended = True
+    game.color_win = winner
+    game.finished_time = timezone.now()
+    mode = game.type_of_game.type.separate_var if game.type_of_game else "blitz"
+    rating_data = _calculate_timeout_ratings(game, mode)
+    game.rating_calculated = True
+    game.save(update_fields=(
+        "has_ended", "color_win", "finished_time", "rating_calculated",
+    ))
+    if game.move_check_task_id:
+        app.control.revoke(str(game.move_check_task_id), terminate=True)
+    logger.info("Game %s — player %d abandoned, %d wins", game_id, disconnected_color, winner)
+    async_to_sync(channel_layer.group_send)(
+        str(game_id),
+        {"type": "game.over",
+         "data": {"event": "game_over", "winner": winner, "reason": "abandoned",
+                  "rating": rating_data}},
+    )
+
+
 @app.task(name="game.check_matchmaking_timeout")
 def check_matchmaking_timeout(token: str, game_type_id: int):
     """
@@ -202,8 +279,8 @@ def check_matchmaking_timeout(token: str, game_type_id: int):
     redis_url = getattr(django_settings, "REDIS_URL", "redis://localhost:6379/0")
     redis_conn = sync_redis.from_url(redis_url, decode_responses=True)
 
-    key = f"matchmaking:{game_type_id}:{token}"
-    data = redis_conn.get(key)
+    dkey = f"mm:d:{game_type_id}:{token}"
+    data = redis_conn.get(dkey)
 
     if data is None:
         return  # Player already matched or cancelled
@@ -212,8 +289,9 @@ def check_matchmaking_timeout(token: str, game_type_id: int):
     player_data = json.loads(data)
     channel_name = player_data.get("channel_name")
 
-    # Remove from queue
-    redis_conn.delete(key)
+    # Remove from queue (ZSET member + payload)
+    redis_conn.zrem(f"mm:z:{game_type_id}", token)
+    redis_conn.delete(dkey)
 
     logger.info("Matchmaking timeout for token=%s, game_type=%d", token[:10], game_type_id)
 

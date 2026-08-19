@@ -7,7 +7,7 @@ Uses event-based protocol: only sends delta (changed fields) per move.
 import json
 import logging
 
-from channels.db import database_sync_to_async
+from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=False (concurrent DB)
 from django.utils import timezone
 
 from shared.django import ColorChoices
@@ -76,12 +76,18 @@ class MoveMixin:
             await self._handle_game_over_by_board(move_result["winner"])
             return
 
-        # Cancel previous timer, start new one
-        await self.cancel_current_timer()
+        # Schedule the next player's timeout. We do NOT revoke the previous
+        # timer here: revoke(terminate=True) is a broadcast control command to
+        # all workers (~hundreds of ms) and, called on EVERY move, it serialized
+        # the event loop under load. The old task instead fires at its eta and
+        # no-ops via check_move_timeout's stale-check (history/last-move changed).
         await self.start_move_timer()
 
         # Send delta update to both players
         await self._broadcast_move(move_result, pdn_entry, message)
+
+        # Stream a deepening eval to spectators only (never to players).
+        await self.maybe_stream_observer_eval(self.board.fen)
 
     async def _broadcast_move(self, move_result: dict, pdn_entry: dict, last_move: list[int]):
         """Send move event to both players — delta only, not full state."""
@@ -116,6 +122,12 @@ class MoveMixin:
                 player_data["possible_moves"] = possible_moves
             await self._send_to_player(color, player_data)
 
+        # Observers get the public move (read-only — no possible_moves).
+        await self.channel_layer.group_send(
+            str(self.game.id),
+            {"type": "game.message", "data": base_data, "to_observers": True},
+        )
+
     async def _send_to_player(self, color: int, data: dict):
         """Send message directly to a specific player by color."""
         if color == self.player_color:
@@ -134,13 +146,22 @@ class MoveMixin:
         Also syncs local board state when receiving opponent's move.
         Supports broadcast=True for messages that go to all players (chat, rematch).
         """
-        # Broadcast messages go to everyone
+        # Broadcast messages go to everyone (players + observers)
         if event.get("broadcast"):
             data = event["data"]
             await self.send_json(data)
             return
 
-        # Targeted messages — filter by color
+        # Observer feed — only spectators consume these (players got their own).
+        if event.get("to_observers"):
+            if getattr(self, "is_observer", False):
+                data = event["data"]
+                if data.get("event") == "move" and data.get("fen"):
+                    self.board = create_board(data["fen"])
+                await self.send_json(data)
+            return
+
+        # Targeted messages — filter by color (observers have no color → skip)
         if event.get("target_color") != self.player_color:
             return
 

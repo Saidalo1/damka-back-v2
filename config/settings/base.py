@@ -91,6 +91,14 @@ DATABASES = {
     "default": env.db("DATABASE_URL", default="postgres://postgres:postgres@localhost:5432/damka_v2"),
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
+# Reuse Postgres connections across queries instead of opening/closing one per
+# query (the default, CONN_MAX_AGE=0). Under WebSocket load every move runs a
+# SELECT+UPDATE through the sync thread-pool; connection churn (TCP+auth per
+# query) otherwise serializes moves and the box sits mostly idle waiting on it.
+# CONN_HEALTH_CHECKS revalidates a reused connection so a dead one is replaced
+# rather than raising. Keep (workers × threads) under Postgres max_connections.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
 # Auth
 AUTH_USER_MODEL = "users.User"

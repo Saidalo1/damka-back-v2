@@ -1,0 +1,21 @@
+# Load-test override: run the ASGI app as MULTIPLE worker processes.
+#
+# A single Python/ASGI process is GIL-bound to ~1 CPU core: pydraughts move
+# generation, board/FEN rebuilds and JSON all serialize on one core, so a
+# single daphne saturates ~1 core and move latency explodes long before the
+# box is busy. Production answer: run N worker processes (N ~= cores) behind
+# one socket; they coordinate through the Redis channel layer + shared Postgres.
+#
+# uvicorn needs a WS backend (daphne ships its own); install `websockets` and
+# select it explicitly. CPU/mem are capped here so the comparison is fair.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d web
+services:
+  web:
+    cpus: 4.0
+    mem_limit: 4g
+    command: >
+      bash -c "pip install -q websockets &&
+      uvicorn config.asgi:application --host 0.0.0.0 --port 8000
+      --workers 5 --ws websockets --no-access-log"

@@ -10,7 +10,7 @@ import json
 import logging
 from datetime import timedelta
 
-from channels.db import database_sync_to_async
+from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=False (concurrent DB)
 from django.db.transaction import on_commit
 from django.utils import timezone
 

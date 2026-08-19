@@ -15,10 +15,25 @@ py-draughts API notes:
 - board.fen — FEN string with numeric squares
 """
 import logging
+import re
 
 from draughts import Color, RussianBoard
 
 logger = logging.getLogger(__name__)
+
+# PDN 1-indexed square → algebraic square name (matches the frontend getPosition
+# map and V1 / live-site move notation, e.g. "21-17" → "a3-b4", "15x24" → "e5xg3").
+_PDN_TO_ALG = {
+    1: "b8", 2: "d8", 3: "f8", 4: "h8", 5: "a7", 6: "c7", 7: "e7", 8: "g7",
+    9: "b6", 10: "d6", 11: "f6", 12: "h6", 13: "a5", 14: "c5", 15: "e5", 16: "g5",
+    17: "b4", 18: "d4", 19: "f4", 20: "h4", 21: "a3", 22: "c3", 23: "e3", 24: "g3",
+    25: "b2", 26: "d2", 27: "f2", 28: "h2", 29: "a1", 30: "c1", 31: "e1", 32: "g1",
+}
+
+
+def to_algebraic_pdn(pdn: str) -> str:
+    """Convert numeric PDN to algebraic so move history reads like V1/live site."""
+    return re.sub(r"\d+", lambda m: _PDN_TO_ALG.get(int(m.group()), m.group()), pdn)
 
 # Map py-draughts Color to our ColorChoices values
 COLOR_MAP = {
@@ -87,7 +102,7 @@ def make_move(board: RussianBoard, square_list: list[int]) -> dict:
 
     # Check if it's a capture
     is_capture = len(target_move.captured_list) > 0
-    pdn_str = str(target_move)
+    pdn_str = to_algebraic_pdn(str(target_move))
 
     # Apply the move
     board.push(target_move)

@@ -6,11 +6,17 @@ Responsible for: auth, channel tracking in Redis, group join, initial state.
 """
 import logging
 
-from channels.db import database_sync_to_async
+from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=False (concurrent DB)
 from django.utils import timezone
 
 from apps.game.models import Game
 from apps.game.services.board import create_board, get_legal_moves_as_lists, get_turn_color
+from apps.game.services.presence import (
+    ABANDON_GRACE,
+    mark_offline,
+    mark_online,
+)
+from apps.game.services.watchers import add_watcher, remove_watcher, watcher_count
 from shared.django import ColorChoices
 
 logger = logging.getLogger(__name__)
@@ -30,19 +36,19 @@ class ConnectionMixin:
             await self.close(code=4004)
             return False
 
-        # Determine which color this player is
+        # Determine which color this player is. If they're not a participant,
+        # they connect as a read-only OBSERVER (spectator) instead of being
+        # rejected — V1 parity ("Viewers can't write there").
         self.player_color = await self._determine_player_color()
-        if self.player_color is None:
-            await self.close(code=4003)
-            return False
+        self.is_observer = self.player_color is None
 
-        # Determine opponent
         self.opponent_color = (
-            ColorChoices.black if self.player_color == ColorChoices.white
+            None if self.is_observer
+            else ColorChoices.black if self.player_color == ColorChoices.white
             else ColorChoices.white
         )
 
-        # Join the game group
+        # Join the game group (players and observers both get live updates).
         self.game_group = str(self.game.id)
         await self.channel_layer.group_add(self.game_group, self.channel_name)
 
@@ -50,13 +56,35 @@ class ConnectionMixin:
         fen = self.game.fen or "startpos"
         self.board = create_board(fen)
 
-        # V1 logic: for matchmaking, mark started immediately
-        if not self.game.has_started:
-            await self._check_game_start()
-            # Schedule first-move timer for white (first turn)
-            await self.start_first_move_timer()
+        if self.is_observer:
+            # Count this spectator and tell everyone the new watcher count.
+            count = await add_watcher(self.game_group, self.channel_name)
+            await self._broadcast_watchers(count)
+        else:
+            # Player is online now (presence → decides the disconnect policy).
+            await mark_online(self.game_group, self.player_color)
+            if not self.game.has_started:
+                # V1 logic: for matchmaking, mark started immediately.
+                await self._check_game_start()
+                await self.start_first_move_timer()
+            elif self.game.last_move:
+                # Reconnected mid-game → clear the opponent's "disconnected" badge.
+                await self.channel_layer.group_send(
+                    self.game_group,
+                    {"type": "game.message",
+                     "data": {"event": "opponent_reconnected", "color": self.player_color},
+                     "target_color": self.opponent_color},
+                )
 
         return True
+
+    async def _broadcast_watchers(self, count: int):
+        """Tell everyone in the game (players + observers) the watcher count."""
+        await self.channel_layer.group_send(
+            self.game_group,
+            {"type": "game.message", "data": {"event": "watchers", "count": count},
+             "broadcast": True},
+        )
 
 
     async def send_initial_state(self):
@@ -93,54 +121,77 @@ class ConnectionMixin:
             "has_started": bool(self.game.last_move),  # V1: True when first move made
             "has_ended": self.game.has_ended,
             "session_score": session_score,
+            "is_observer": self.is_observer,
+            "watchers": await watcher_count(self.game_group),
         })
 
     async def handle_disconnect(self):
-        """Clean up on player disconnect — V1 parity.
+        """Clean up on disconnect.
 
-        Handles:
-        1. Revoke pending timer tasks (so they don't fire on ended game)
-        2. Mark all_players_left if game is ended (allows cleanup)
-        3. Leave channel group
+        Observers: deregister from the watcher set + update the count.
+        Players: the CLOCK KEEPS RUNNING (we do NOT cancel the move timer — a
+        disconnected player loses on time if they don't return). We tell the
+        opponent, and if BOTH players are now gone we schedule an abort.
         """
+        # Observer leaves — no game-state side effects, just update the count.
+        if getattr(self, "is_observer", False):
+            if hasattr(self, "game_group"):
+                count = await remove_watcher(self.game_group, self.channel_name)
+                await self._broadcast_watchers(count)
+                await self.channel_layer.group_discard(self.game_group, self.channel_name)
+            return
+
         if hasattr(self, "game") and self.game:
-            # Refresh from DB to get latest state (game may have ended)
             try:
                 await database_sync_to_async(self.game.refresh_from_db)()
             except Exception:
                 pass
 
-            # Revoke any active timer tasks
-            if hasattr(self, "cancel_current_timer"):
-                try:
-                    await self.cancel_current_timer()
-                except Exception:
-                    pass
+            has_color = getattr(self, "player_color", None) is not None
+            online = 0
+            if has_color:
+                online = await mark_offline(self.game_group, self.player_color)
 
-            # V1 parity: if game ended and player is a participant,
-            # mark all_players_left so the game room is cleaned up
-            if self.game.has_ended and not self.game.all_players_left:
-                if hasattr(self, "player_color") and self.player_color is not None:
+            if self.game.has_ended:
+                # Ended game: mark the room fully left so it can be cleaned up.
+                if not self.game.all_players_left and has_color:
                     self.game.all_players_left = True
-                    await database_sync_to_async(
-                        self.game.save
-                    )(update_fields=["all_players_left"])
-
-                    # Notify remaining player that opponent left
+                    await database_sync_to_async(self.game.save)(
+                        update_fields=["all_players_left"]
+                    )
                     await self.channel_layer.group_send(
                         self.game_group,
-                        {
-                            "type": "game.message",
-                            "data": {
-                                "event": "opponent_disconnected",
-                                "color": self.player_color,
-                            },
-                            "target_color": self.opponent_color,
-                        },
+                        {"type": "game.message",
+                         "data": {"event": "opponent_disconnected", "color": self.player_color},
+                         "target_color": self.opponent_color},
                     )
+            elif has_color:
+                # Active game — the clock KEEPS ticking (we don't touch the
+                # timer). Tell the opponent this player dropped (temporary), and
+                # schedule the abandonment check: after the grace it decides
+                # returned / both-gone-abort / forfeit.
+                await self.channel_layer.group_send(
+                    self.game_group,
+                    {"type": "game.message",
+                     "data": {"event": "opponent_disconnected",
+                              "color": self.player_color, "temporary": True},
+                     "target_color": self.opponent_color},
+                )
+                await self._schedule_abandonment_check(self.player_color)
 
         if hasattr(self, "game_group"):
             await self.channel_layer.group_discard(self.game_group, self.channel_name)
+
+    @database_sync_to_async
+    def _schedule_abandonment_check(self, disconnected_color: int):
+        """Schedule the abandonment check (Celery, eta = now + grace)."""
+        from datetime import timedelta
+
+        from apps.game.tasks import check_abandonment
+        check_abandonment.apply_async(
+            args=[str(self.game.id), disconnected_color],
+            eta=timezone.now() + timedelta(seconds=ABANDON_GRACE),
+        )
 
     @database_sync_to_async
     def _get_game(self, game_uuid: str):

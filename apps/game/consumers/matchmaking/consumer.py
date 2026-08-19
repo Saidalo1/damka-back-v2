@@ -42,6 +42,10 @@ class MatchmakingConsumer(
         """Route incoming messages to appropriate handlers."""
         msg_type = content.get("type")
 
+        if msg_type == "ping":
+            await self.send_json({"event": "pong"})
+            return
+
         handlers = {
             "search": lambda: self.handle_search(content.get("message", {})),
             "cancel": self.handle_cancel,

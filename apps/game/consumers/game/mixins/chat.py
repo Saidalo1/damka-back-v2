@@ -6,7 +6,7 @@ and broadcasts to both players.
 """
 import logging
 
-from channels.db import database_sync_to_async
+from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=False (concurrent DB)
 from django.utils import timezone
 
 from shared.django import ColorChoices
@@ -32,25 +32,34 @@ class ChatMixin:
         if not message:
             return
 
-        # Save to DB
-        chat_entry = await self._save_chat_message(message)
+        # Spectator chat: ephemeral (not persisted) and visible to OTHER
+        # spectators only — never shown to the players.
+        if getattr(self, "is_observer", False):
+            chat_data = {
+                "event": "chat",
+                "message": message,
+                "sender_color": None,
+                "is_observer": True,
+                "timestamp": str(timezone.now()),
+            }
+            await self.channel_layer.group_send(
+                str(self.game.id),
+                {"type": "game.message", "data": chat_data, "to_observers": True},
+            )
+            return
 
-        # Broadcast to both players
+        # Player chat: persisted + broadcast to EVERYONE (players + spectators).
+        chat_entry = await self._save_chat_message(message)
         chat_data = {
             "event": "chat",
             "message": message,
             "sender_color": self.player_color,
+            "is_observer": False,
             "timestamp": chat_entry["timestamp"],
         }
-
-        # Send to the game group (both players receive it)
         await self.channel_layer.group_send(
             str(self.game.id),
-            {
-                "type": "game.message",
-                "data": chat_data,
-                "broadcast": True,
-            },
+            {"type": "game.message", "data": chat_data, "broadcast": True},
         )
 
     @database_sync_to_async

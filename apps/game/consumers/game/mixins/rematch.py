@@ -8,7 +8,7 @@ Flow:
 """
 import logging
 
-from channels.db import database_sync_to_async
+from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=False (concurrent DB)
 from django.conf import settings
 
 from shared.django import ColorChoices

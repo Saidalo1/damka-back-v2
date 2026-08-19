@@ -6,12 +6,24 @@ set -o nounset
 python manage.py collectstatic --noinput
 python manage.py migrate --noinput
 
-# Use watchfiles for auto-reload during development (Daphne has no --reload)
-# Falls back to plain Daphne if watchfiles is not installed
-if python -c "import watchfiles" 2>/dev/null; then
+# WEB_CONCURRENCY controls production scale-out. A single Python/ASGI process is
+# GIL-bound to ~1 CPU core (pydraughts move-gen, board/FEN, JSON all serialize),
+# so one process saturates one core and move latency explodes long before the
+# box is busy. Running N worker processes (N ~= vCPUs) uses every core; they
+# share game state through the Redis channel layer + Postgres. Load tests: on a
+# 6-vCPU box this took move round-trip p50 from ~2000ms (1 process) to ~30ms.
+WORKERS="${WEB_CONCURRENCY:-0}"
+
+if [ "$WORKERS" -gt 1 ] 2>/dev/null; then
+    echo "Starting uvicorn with $WORKERS worker processes..."
+    exec uvicorn config.asgi:application \
+        --host 0.0.0.0 --port 8000 \
+        --workers "$WORKERS" --ws websockets --no-access-log
+elif python -c "import watchfiles" 2>/dev/null; then
+    # Dev: single process with auto-reload (Daphne has no --reload of its own).
     echo "Starting Daphne with auto-reload (watchfiles)..."
-    watchfiles --filter python "daphne -b 0.0.0.0 -p 8000 config.asgi:application"
+    exec watchfiles --filter python "daphne -b 0.0.0.0 -p 8000 config.asgi:application"
 else
     echo "Starting Daphne (no auto-reload — install watchfiles for dev)..."
-    daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    exec daphne -b 0.0.0.0 -p 8000 config.asgi:application
 fi

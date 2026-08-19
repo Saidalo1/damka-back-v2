@@ -91,7 +91,11 @@ class ConnectionMixin:
     async def send_initial_state(self):
         """Send full game state to the connecting player (event: init)."""
         is_my_turn = get_turn_color(self.board) == self.player_color
-        possible_moves = get_legal_moves_as_lists(self.board) if is_my_turn else []
+        # A finished game is read-only: no legal moves so the board can't be played.
+        possible_moves = (
+            [] if self.game.has_ended
+            else (get_legal_moves_as_lists(self.board) if is_my_turn else [])
+        )
 
         users = await self._build_users_list()
         chat_history = await self._get_chat_history()
@@ -124,6 +128,9 @@ class ConnectionMixin:
             "possible_moves": possible_moves,
             "has_started": bool(self.game.last_move),  # V1: True when first move made
             "has_ended": self.game.has_ended,
+            # Result carried in init so reopening a finished game can show the
+            # result modal straight away (V1 parity). None while the game is live.
+            "winner": self.game.color_win if self.game.has_ended else None,
             "session_score": session_score,
             "is_observer": self.is_observer,
             "watchers": await watcher_count(self.game_group),

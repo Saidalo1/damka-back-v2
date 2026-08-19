@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 
 from shared.django import (
     CustomTokenPermission, CustomTokenAuthentication, generate_sms_code,
-    send_verification_email, update_users_token,
+    send_notification, send_verification_email, update_users_token,
 )
 from shared.django import validate_telegram_username
 from apps.users.models import User, Countries
@@ -112,6 +112,11 @@ class UserEmailOrPhoneNumberUpdateView(GenericAPIView):
                 if settings.DEBUG:
                     code = '0000'
                     print(f"[DEBUG] Phone update code for {new_phone_number}: {code}")
+                else:
+                    status_code, *_ = send_notification(new_phone_number, code)
+                    if status_code != 200:
+                        return Response({"error": _("Could not send the SMS code. Please try again.")},
+                                        HTTP_400_BAD_REQUEST)
                 request.session[phone_number_data] = code
                 request.data['phone_number'] = old_phone_number
         else:

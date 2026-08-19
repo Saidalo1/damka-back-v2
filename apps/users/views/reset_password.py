@@ -7,7 +7,7 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
-from shared.django import generate_sms_code, update_users_token, send_verification_email
+from shared.django import generate_sms_code, update_users_token, send_verification_email, send_notification
 from apps.users.models import User
 from apps.users.serializers import (
     PasswordResetConfirmSerializer, PasswordResetRequestSerializer,
@@ -49,7 +49,12 @@ class PasswordResetRequestView(GenericAPIView):
             if settings.DEBUG:
                 verification_code = '0000'
                 print(f"[DEBUG] Password reset code for {once}: {verification_code}")
-            elif not phone_number:
+            elif phone_number:
+                status_code, *_ = send_notification(once, verification_code)
+                if status_code != 200:
+                    return Response({'error': _('Could not send the SMS code. Please try again.')},
+                                    HTTP_400_BAD_REQUEST)
+            else:
                 send_verification_email(once, verification_code, user.username)
 
             request.session[f'password_reset:{once}'] = verification_code

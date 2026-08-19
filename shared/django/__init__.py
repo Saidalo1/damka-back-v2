@@ -229,12 +229,71 @@ def send_verification_email(email, code, username):
     msg.send()
 
 
+def _eskiz_login(api, settings) -> str | None:
+    """Log in to Eskiz and return a fresh bearer token (or None on failure)."""
+    from requests import post
+    resp = post(f"{api}/auth/login",
+                data={"email": settings.ESKIZ_EMAIL, "password": settings.ESKIZ_PASSWORD},
+                timeout=10)
+    try:
+        return resp.json().get("data", {}).get("token")
+    except Exception:
+        return None
+
+
 def send_notification(phone, code) -> tuple:
-    """Send SMS notification (placeholder — configure in production)."""
+    """Send an SMS verification code via Eskiz.uz.
+
+    Returns (status_code, detail, raw_text, sent_message). In DEBUG we don't hit
+    the network — the code is already surfaced in the registration response/logs.
+
+    The bearer token is cached in Redis (key ``eskiz_token``, ~7 days). Unlike V1
+    (which had no refresh path), a 401 from an expired-but-cached token triggers a
+    single re-login + retry.
+    """
     from django.conf import settings
+
     if settings.DEBUG:
         print(f"[DEBUG] SMS to {phone}: code={code}")
-        return (200, 'OK', '', f'Code: {code}')
-    # Production: integrate with Eskiz.uz or your SMS gateway
-    return (200, 'OK', '', f'Code: {code}')
+        return (200, "OK", "", f"Code: {code}")
+
+    import redis as sync_redis
+    from requests import post
+
+    api = settings.ESKIZ_API_URL.rstrip("/")
+    r = sync_redis.from_url(settings.REDIS_URL)
+
+    cached = r.get("eskiz_token")
+    token = cached.decode() if cached else None
+    if not token:
+        token = _eskiz_login(api, settings)
+        if not token:
+            return (502, "eskiz login failed", "", "")
+        r.setex("eskiz_token", 60 * 60 * 24 * 7, token)
+
+    def _send(tok):
+        return post(
+            f"{api}/message/sms/send",
+            data={
+                "from": settings.ESKIZ_FROM,
+                "mobile_phone": str(phone).lstrip("+"),  # Eskiz wants 998XXXXXXXXX
+                "message": settings.ESKIZ_MESSAGE.format(code=code),
+            },
+            headers={"Authorization": f"Bearer {tok}"},
+            timeout=10,
+        )
+
+    resp = _send(token)
+    if resp.status_code == 401:  # cached token expired → re-login once and retry
+        r.delete("eskiz_token")
+        token = _eskiz_login(api, settings)
+        if token:
+            r.setex("eskiz_token", 60 * 60 * 24 * 7, token)
+            resp = _send(token)
+
+    try:
+        detail = resp.json().get("message", resp.text[:200])
+    except Exception:
+        detail = resp.text[:200]
+    return (resp.status_code, detail, resp.text[:200], settings.ESKIZ_MESSAGE.format(code=code))
 

@@ -186,7 +186,11 @@ DEFAULT_RATING = 1600
 # SMS (Eskiz.uz)
 ESKIZ_EMAIL = env("ESKIZ_EMAIL", default="")
 ESKIZ_PASSWORD = env("ESKIZ_PASSWORD", default="")
-ESKIZ_API_URL = "https://notify.eskiz.uz/api"
+ESKIZ_API_URL = env("ESKIZ_API_URL", default="https://notify.eskiz.uz/api")
+# Sender nick registered with Eskiz ("4546" is Eskiz's test sender).
+ESKIZ_FROM = env("ESKIZ_FROM", default="4546")
+# Must match a template approved by Eskiz for production. {code} is substituted.
+ESKIZ_MESSAGE = env("ESKIZ_MESSAGE", default="Damka.uz tasdiqlash kodi: {code}")
 
 # Telegram notifications
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")

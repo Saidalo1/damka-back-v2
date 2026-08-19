@@ -7,7 +7,10 @@ from rest_framework.generics import CreateAPIView
 from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST, HTTP_200_OK, HTTP_201_CREATED
 
-from shared.django import generate_sms_code, UniqueNumberOrEmailPermission, CustomTokenAuthentication
+from shared.django import (
+    generate_sms_code, UniqueNumberOrEmailPermission, CustomTokenAuthentication,
+    send_notification, send_verification_email,
+)
 from apps.users.models import User
 from apps.users.serializers import SMSVerificationSerializer, AuthEmailPhoneNumberSerializer
 
@@ -33,14 +36,23 @@ class SMSRequestView(CreateAPIView):
 
             code = generate_sms_code()
 
-            # In DEBUG mode, skip real SMS sending and use fixed code 0000
+            # In DEBUG mode, skip real sending and use fixed code 0000.
             if settings.DEBUG:
                 code = '0000'
                 print(f"[DEBUG] Registration code for {phone_number or email}: {code}")
-            # else:
-            #     send_notification.apply_async(kwargs={"phone": phone_number, "code": code})
+            elif phone_number:
+                status_code, detail, *_ = send_notification(phone_number, code)
+                if status_code != 200:
+                    return Response({'error': _('Could not send the SMS code. Please try again.')},
+                                    HTTP_400_BAD_REQUEST)
+            else:  # email
+                try:
+                    send_verification_email(email, code, email)
+                except Exception:
+                    return Response({'error': _('Could not send the email code. Please try again.')},
+                                    HTTP_400_BAD_REQUEST)
 
-            # Store in session
+            # Store in session only after the code was successfully dispatched.
             key = phone_number or email
             request.session[key] = dumps({
                 'code': code,

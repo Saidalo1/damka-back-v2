@@ -10,7 +10,7 @@ from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=Fa
 from django.utils import timezone
 
 from apps.game.models import Game
-from apps.game.services.board import create_board, get_legal_moves_as_lists, get_turn_color
+from apps.game.services.board import get_legal_moves_as_lists, get_turn_color, safe_create_board
 from apps.game.services.presence import (
     ABANDON_GRACE,
     mark_offline,
@@ -52,9 +52,10 @@ class ConnectionMixin:
         self.game_group = str(self.game.id)
         await self.channel_layer.group_add(self.game_group, self.channel_name)
 
-        # Initialize board from FEN (None → startpos)
+        # Initialize board from FEN (None → startpos). safe_ so reconnecting to a
+        # FINISHED game whose FEN has a wiped-out side (unparseable) doesn't crash.
         fen = self.game.fen or "startpos"
-        self.board = create_board(fen)
+        self.board = safe_create_board(fen)
 
         if self.is_observer:
             # Count this spectator and tell everyone the new watcher count.
@@ -101,7 +102,10 @@ class ConnectionMixin:
 
         await self.send_json({
             "event": "init",
-            "fen": self.board.fen,
+            # Prefer the stored FEN: for a finished wiped-out game self.board is a
+            # fallback (its .fen would be startpos), but the DB holds the true
+            # terminal position, which the frontend renders fine.
+            "fen": self.game.fen or self.board.fen,
             "turn": self.game.turn if self.game.turn is not None else get_turn_color(self.board),
             "users": users,
             "times": {

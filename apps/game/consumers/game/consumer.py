@@ -101,3 +101,16 @@ class GameConsumer(
         """
         data = event.get("data", {})
         await self.send_json(data)
+
+    async def force_disconnect(self, event):
+        """Close this socket after a finished game's rematch window elapsed.
+
+        Scheduled by the rematch wait timer. We tell the client the session is
+        over (so it navigates home) and close with code 4005, which the frontend
+        treats as terminal — it must NOT auto-reconnect to a dead game.
+        """
+        try:
+            await self.send_json({"event": "session_expired"})
+        except Exception:
+            pass
+        await self.close(code=4005)

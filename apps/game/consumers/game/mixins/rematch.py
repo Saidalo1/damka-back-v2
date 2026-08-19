@@ -15,6 +15,10 @@ from shared.django import ColorChoices
 
 logger = logging.getLogger(__name__)
 
+# Seconds players stay on the result screen (able to rematch) before the game's
+# sockets are force-closed to free the connections.
+REMATCH_WAIT = 60
+
 
 class RematchMixin:
     """Handles rematch offers and game creation."""
@@ -26,7 +30,15 @@ class RematchMixin:
         Uses Redis to track which players have requested a rematch.
         If both players request, creates a new child game.
         """
-        if not hasattr(self, "game") or not self.game or not self.game.has_ended:
+        if not hasattr(self, "game") or not self.game:
+            await self.send_json({"event": "error", "message": "Game is not over yet"})
+            return
+
+        # The game was finalized on the OTHER player's consumer, so our in-memory
+        # copy still has has_ended=False. Reload before the check, otherwise the
+        # opponent's rematch click is wrongly rejected and both-agree never fires.
+        await self._refresh_game()
+        if not self.game.has_ended:
             await self.send_json({"event": "error", "message": "Game is not over yet"})
             return
 
@@ -121,14 +133,25 @@ class RematchMixin:
 
     async def start_rematch_wait_timer(self):
         """
-        Start a timer for rematch waiting period.
+        Schedule the post-game cleanup.
 
-        After the game ends, players have a window to request a rematch.
-        If neither does within the timeout, cleanup happens.
+        After a game ends, players get REMATCH_WAIT seconds on the result screen
+        to click a rematch. If no rematch game is created in that window, a Celery
+        task closes both sockets so finished games don't hold connections open.
         """
-        # For now, cleanup happens naturally via Redis key expiry (5 min).
-        # Future: could add a Celery task for proactive cleanup.
-        pass
+        await self._schedule_rematch_cleanup()
+
+    @database_sync_to_async
+    def _schedule_rematch_cleanup(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.game.tasks import close_finished_game
+        close_finished_game.apply_async(
+            args=[str(self.game.id)],
+            eta=timezone.now() + timedelta(seconds=REMATCH_WAIT),
+        )
 
     def _get_redis(self):
         """Get Redis connection for rematch tracking."""

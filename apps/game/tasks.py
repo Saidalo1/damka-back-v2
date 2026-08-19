@@ -265,6 +265,33 @@ def check_abandonment(game_id: str, disconnected_color: int):
     )
 
 
+@app.task(name="game.close_finished_game")
+def close_finished_game(game_id: str):
+    """Force-close a finished game's sockets after the rematch window elapsed.
+
+    Scheduled REMATCH_WAIT seconds after a game ends. If the players started a
+    rematch (a child game exists), they've already moved on — do nothing.
+    Otherwise close every socket in the group so idle finished games don't hold
+    connections open. The consumer's force_disconnect closes with code 4005,
+    which the frontend treats as terminal (no auto-reconnect).
+    """
+    from apps.game.models import Game
+
+    try:
+        game = Game.objects.get(id=game_id)
+    except (Game.DoesNotExist, ValueError):
+        return
+
+    # A rematch was started → players already navigated to the child game.
+    if game.get_children().exists():
+        return
+
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        str(game_id), {"type": "force.disconnect"},
+    )
+
+
 @app.task(name="game.check_matchmaking_timeout")
 def check_matchmaking_timeout(token: str, game_type_id: int):
     """

@@ -54,6 +54,23 @@ def create_board(fen: str = "startpos") -> RussianBoard:
     return RussianBoard.from_fen(fen)
 
 
+def safe_create_board(fen: str = "startpos") -> RussianBoard:
+    """Like create_board but never raises.
+
+    py-draughts emits a FEN with an empty side when one player is wiped out
+    (e.g. "W:W:B2,4,..."), yet its own from_fen refuses to parse that back. Such
+    a position is game-over, so no move generation is needed from the rebuilt
+    board — callers only re-parse for DISPLAY (opponent's move sync, reconnect).
+    Fall back to a fresh board on failure so those paths don't crash; the true
+    position still travels to the client as the FEN string itself.
+    """
+    try:
+        return create_board(fen)
+    except Exception:
+        logger.warning("Unparseable FEN (likely a wiped-out terminal position): %s", fen)
+        return RussianBoard()
+
+
 def get_turn_color(board: RussianBoard) -> int:
     """Get current turn as ColorChoices value (1=black, 2=white)."""
     return COLOR_MAP[board.turn]

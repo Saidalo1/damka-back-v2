@@ -11,7 +11,12 @@ from apps.game.consumers.db import database_sync_to_async  # thread_sensitive=Fa
 from django.utils import timezone
 
 from shared.django import ColorChoices
-from apps.game.services.board import create_board, get_legal_moves_as_lists, get_turn_color, make_move
+from apps.game.services.board import (
+    get_legal_moves_as_lists,
+    get_turn_color,
+    make_move,
+    safe_create_board,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +76,13 @@ class MoveMixin:
         # Update game state in DB
         await self._update_game_after_move(move_result, history, pdn_entry, move_number, message, move_received_at)
 
-        # Check game over
+        # Broadcast the move FIRST so the final position renders on both boards.
+        # If this move ends the game, the game_over event must arrive AFTER the
+        # move — otherwise clients pop the result modal before drawing the
+        # winning move (the piece never appears to land).
+        await self._broadcast_move(move_result, pdn_entry, message)
+
+        # Check game over (winning move already sent above).
         if move_result["game_over"]:
             await self._handle_game_over_by_board(move_result["winner"])
             return
@@ -82,9 +93,6 @@ class MoveMixin:
         # the event loop under load. The old task instead fires at its eta and
         # no-ops via check_move_timeout's stale-check (history/last-move changed).
         await self.start_move_timer()
-
-        # Send delta update to both players
-        await self._broadcast_move(move_result, pdn_entry, message)
 
         # Stream a deepening eval to spectators only (never to players).
         await self.maybe_stream_observer_eval(self.board.fen)
@@ -157,7 +165,7 @@ class MoveMixin:
             if getattr(self, "is_observer", False):
                 data = event["data"]
                 if data.get("event") == "move" and data.get("fen"):
-                    self.board = create_board(data["fen"])
+                    self.board = safe_create_board(data["fen"])
                 await self.send_json(data)
             return
 
@@ -169,7 +177,7 @@ class MoveMixin:
 
         # Sync board state when opponent made a move
         if data.get("event") == "move" and data.get("fen"):
-            self.board = create_board(data["fen"])
+            self.board = safe_create_board(data["fen"])
 
         await self.send_json(data)
 
@@ -181,7 +189,7 @@ class MoveMixin:
             "white", "black", "type_of_game", "type_of_game__type",
         ).get(id=self.game.id)
         # Rebuild board from latest FEN (None → startpos for new games)
-        self.board = create_board(self.game.fen or "startpos")
+        self.board = safe_create_board(self.game.fen or "startpos")
 
     @database_sync_to_async
     def _update_game_after_move(

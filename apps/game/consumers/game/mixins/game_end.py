@@ -47,11 +47,13 @@ class GameEndMixin:
                 await self._end_game(winner_color=0, reason="draw")
                 return
             else:
-                # Offer draw
+                # Offer draw — notify BOTH players (V1 parity). The offerer gets
+                # the echo too so their button flips to "waiting"; the opponent
+                # (draw != their color) gets the accept/decline banner.
                 await self._set_draw_offer(ColorChoices.white)
                 await self.channel_layer.group_send(
                     self.game_group,
-                    {"type": "game.message", "data": {"event": "draw_offer", "color": self.player_color}, "target_color": self.opponent_color},
+                    {"type": "game.message", "data": {"event": "draw_offer", "color": self.player_color}, "broadcast": True},
                 )
         else:
             if self.game.black_draw_offer:

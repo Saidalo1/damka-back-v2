@@ -64,7 +64,10 @@ class GameWithFriendConsumer(AsyncJsonWebsocketConsumer):
 
     async def receive_json(self, content, **kwargs):
         msg_type = content.get("type")
-        if msg_type == "game_type":
+        if msg_type == "ping":
+            # Client heartbeat — reply so the socket isn't flagged as dead.
+            await self.send_json({"event": "pong"})
+        elif msg_type == "game_type":
             await self._create_private_game(content.get("message") or {})
         else:
             await self.send_json({"event": "error", "message": f"Unknown type: {msg_type}"})

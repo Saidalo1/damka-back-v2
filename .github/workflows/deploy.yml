@@ -1,0 +1,40 @@
+name: Deploy
+
+# SSH into the server and pull + rebuild + restart the stack. Modeled on the
+# visa_doctors ci_cd flow, adapted for our ASGI stack (no GHCR image build —
+# the server builds from source via docker-compose.yml).
+#
+# Required GitHub repo secrets:
+#   SSH_HOST, SSH_USERNAME, SSH_PRIVATE_KEY, (optional) SSH_PASSPHRASE, SSH_PORT,
+#   APP_DIRECTORY  (absolute path of the repo on the server, e.g. /opt/damka/damka-back-v2)
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.APP_DIRECTORY }}"
+            git pull origin master
+            docker compose build web celery_worker
+            docker compose up -d
+            docker compose exec -T web python manage.py migrate --noinput
+            docker compose exec -T web python manage.py collectstatic --noinput
+            docker image prune -f

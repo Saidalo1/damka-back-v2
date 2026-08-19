@@ -1,12 +1,25 @@
 import uuid
 
+from django.contrib import admin as dj_admin
 from django.contrib.admin import register
+from django.contrib.admin.forms import AdminAuthenticationForm
 from django.contrib.auth.admin import UserAdmin
 from django.utils.translation import gettext_lazy as _
 from unfold.admin import ModelAdmin
 
 from apps.users.forms import CustomUserCreationForm
 from apps.users.models import User, Countries
+
+
+class UsernameOrPhoneAdminLoginForm(AdminAuthenticationForm):
+    """Relabel the admin login field — it now accepts a username or a phone."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["username"].label = _("Username or phone")
+
+
+dj_admin.site.login_form = UsernameOrPhoneAdminLoginForm
 
 
 @register(User)

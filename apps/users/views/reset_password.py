@@ -50,7 +50,7 @@ class PasswordResetRequestView(GenericAPIView):
                 verification_code = '0000'
                 print(f"[DEBUG] Password reset code for {once}: {verification_code}")
             elif phone_number:
-                status_code, *_ = send_notification(once, verification_code)
+                status_code = send_notification(once, verification_code)[0]
                 if status_code != 200:
                     return Response({'error': _('Could not send the SMS code. Please try again.')},
                                     HTTP_400_BAD_REQUEST)

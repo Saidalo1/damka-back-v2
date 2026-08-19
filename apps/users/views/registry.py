@@ -41,7 +41,7 @@ class SMSRequestView(CreateAPIView):
                 code = '0000'
                 print(f"[DEBUG] Registration code for {phone_number or email}: {code}")
             elif phone_number:
-                status_code, detail, *_ = send_notification(phone_number, code)
+                status_code = send_notification(phone_number, code)[0]
                 if status_code != 200:
                     return Response({'error': _('Could not send the SMS code. Please try again.')},
                                     HTTP_400_BAD_REQUEST)

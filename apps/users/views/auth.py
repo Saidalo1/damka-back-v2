@@ -113,7 +113,7 @@ class UserEmailOrPhoneNumberUpdateView(GenericAPIView):
                     code = '0000'
                     print(f"[DEBUG] Phone update code for {new_phone_number}: {code}")
                 else:
-                    status_code, *_ = send_notification(new_phone_number, code)
+                    status_code = send_notification(new_phone_number, code)[0]
                     if status_code != 200:
                         return Response({"error": _("Could not send the SMS code. Please try again.")},
                                         HTTP_400_BAD_REQUEST)

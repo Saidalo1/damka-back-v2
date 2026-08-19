@@ -191,6 +191,11 @@ ESKIZ_API_URL = env("ESKIZ_API_URL", default="https://notify.eskiz.uz/api")
 ESKIZ_FROM = env("ESKIZ_FROM", default="4546")
 # Must match a template approved by Eskiz for production. {code} is substituted.
 ESKIZ_MESSAGE = env("ESKIZ_MESSAGE", default="Damka.uz tasdiqlash kodi: {code}")
+# TEMPORARY bypass: when True, verification codes are forced to "0000" and NO real
+# SMS/email is sent — lets you test registration on a real (DEBUG=False) deploy
+# before Eskiz/SMTP are configured. ⚠️ This is a backdoor (anyone can verify with
+# 0000). Keep it False in a live product; turn it OFF the moment Eskiz works.
+SMS_TEST_MODE = env.bool("SMS_TEST_MODE", default=False)
 
 # Telegram notifications
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")

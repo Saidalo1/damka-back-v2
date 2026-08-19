@@ -36,10 +36,10 @@ class SMSRequestView(CreateAPIView):
 
             code = generate_sms_code()
 
-            # In DEBUG mode, skip real sending and use fixed code 0000.
-            if settings.DEBUG:
+            # DEBUG or SMS_TEST_MODE → skip real sending and use fixed code 0000.
+            if settings.DEBUG or settings.SMS_TEST_MODE:
                 code = '0000'
-                print(f"[DEBUG] Registration code for {phone_number or email}: {code}")
+                print(f"[TEST] Registration code for {phone_number or email}: {code}")
             elif phone_number:
                 status_code = send_notification(phone_number, code)[0]
                 if status_code != 200:

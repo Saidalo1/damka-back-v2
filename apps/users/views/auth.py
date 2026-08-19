@@ -109,7 +109,7 @@ class UserEmailOrPhoneNumberUpdateView(GenericAPIView):
                 if request.session.get(phone_number_data):
                     return Response({"error": _("This phone number is already in process!")}, HTTP_400_BAD_REQUEST)
                 code = generate_sms_code()
-                if settings.DEBUG:
+                if settings.DEBUG or settings.SMS_TEST_MODE:
                     code = '0000'
                     print(f"[DEBUG] Phone update code for {new_phone_number}: {code}")
                 else:
@@ -126,7 +126,7 @@ class UserEmailOrPhoneNumberUpdateView(GenericAPIView):
                 if request.session.get(email_data):
                     return Response({"error": _("This email is already in process!")}, HTTP_400_BAD_REQUEST)
                 code = generate_sms_code()
-                if settings.DEBUG:
+                if settings.DEBUG or settings.SMS_TEST_MODE:
                     code = '0000'
                     print(f"[DEBUG] Email update code for {new_email}: {code}")
                 else:

@@ -46,7 +46,7 @@ class PasswordResetRequestView(GenericAPIView):
                 return Response({'message': _('User with this data does not exist!')}, HTTP_404_NOT_FOUND)
 
             verification_code = generate_sms_code()
-            if settings.DEBUG:
+            if settings.DEBUG or settings.SMS_TEST_MODE:
                 verification_code = '0000'
                 print(f"[DEBUG] Password reset code for {once}: {verification_code}")
             elif phone_number:

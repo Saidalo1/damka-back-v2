@@ -207,6 +207,8 @@ UNFOLD = {
     "SITE_SUBHEADER": "Checkers Game Platform",
     "SITE_URL": "/",
     "SITE_SYMBOL": "playing_cards",  # Material icon
+    # Unfold-styled login form, relabelled "Username or phone" (styling intact).
+    "LOGIN": {"form": "apps.users.forms.AdminLoginForm"},
     "SHOW_HISTORY": True,
     "SHOW_VIEW_ON_SITE": False,
     "THEME": "dark",

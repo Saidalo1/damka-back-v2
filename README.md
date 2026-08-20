@@ -15,16 +15,13 @@ under load, not just to work in a demo.
 ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
 
 <!-- GIFs recorded with ScreenToGif at localhost:3000. -->
-<table>
-  <tr>
-    <td width="50%"><img src="docs/media/gameplay.gif" alt="Gameplay" width="100%"></td>
-    <td width="50%"><img src="docs/media/home.gif" alt="Home — live demo board" width="100%"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Gameplay — piece glide, live clocks, last-move arrows</sub></td>
-    <td align="center"><sub>Home — live auto-playing board</sub></td>
-  </tr>
-</table>
+<img src="docs/media/home.gif" alt="Home — live demo board" width="620">
+
+<sub>Home — live auto-playing board, matchmaking, play-vs-bot</sub>
+
+<img src="docs/media/gameplay.gif" alt="Gameplay" width="620">
+
+<sub>Gameplay — smooth piece glide, live clocks, last-move arrows</sub>
 
 *Two players, live clocks, move history, chat, rematch — all over WebSockets.*
 

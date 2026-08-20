@@ -14,14 +14,10 @@ under load, not just to work in a demo.
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
 
-<!-- GIFs recorded with ScreenToGif at localhost:3000. -->
+<!-- Home / menu recorded with ScreenToGif at localhost:3000. -->
 <img src="docs/media/home.gif" alt="Home — live demo board" width="620">
 
-<sub>Home — live auto-playing board, matchmaking, play-vs-bot</sub>
-
-<img src="docs/media/gameplay.gif" alt="Gameplay" width="620">
-
-<sub>Gameplay — smooth piece glide, live clocks, last-move arrows</sub>
+<sub>Home — matchmaking, play-vs-bot, live auto-playing board</sub>
 
 *Two players, live clocks, move history, chat, rematch — all over WebSockets.*
 
@@ -53,6 +49,11 @@ under load, not just to work in a demo.
   socket (Wi-Fi off) instead of waiting on `onclose`, reconnect with clock re-sync,
   disconnect grace + abandonment policy, draw offer/decline.
 - **Tests:** pytest suite for the rules engine and the bot; integration WS runners.
+
+<div align="center">
+<img src="docs/media/gameplay.gif" alt="Gameplay" width="620">
+<br><sub>Gameplay — smooth piece glide, live clocks, last-move arrows</sub>
+</div>
 
 ## Performance (measured)
 Load-tested through the **real matchmaking flow** (players connect, match, then play

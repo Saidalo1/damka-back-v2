@@ -14,8 +14,17 @@ under load, not just to work in a demo.
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
 
-<!-- Record with ScreenToGif (Windows) at localhost:3000 and drop the file here. -->
-![Gameplay demo](docs/media/gameplay.gif)
+<!-- GIFs recorded with ScreenToGif at localhost:3000. -->
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/gameplay.gif" alt="Gameplay" width="100%"></td>
+    <td width="50%"><img src="docs/media/home.gif" alt="Home — live demo board" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Gameplay — piece glide, live clocks, last-move arrows</sub></td>
+    <td align="center"><sub>Home — live auto-playing board</sub></td>
+  </tr>
+</table>
 
 *Two players, live clocks, move history, chat, rematch — all over WebSockets.*
 

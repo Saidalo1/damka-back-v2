@@ -1,0 +1,50 @@
+# Production overlay — apply ON TOP of the base compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# It is NOT named docker-compose.override.yml on purpose: that name auto-loads on
+# every `docker compose up` and would break local dev. This overlay is opt-in.
+#
+# vs the dev defaults it:
+#   * stops publishing postgres/redis/web to the host — only nginx is exposed,
+#     and only on loopback, behind YOUR host nginx that terminates TLS
+#   * reads the real `.env` instead of the dev `.env.docker`
+#   * drops the `.:/app` bind mount so the image ships the code
+#     (redeploy = git pull && docker compose ... build && ... up -d)
+name: damka-v2
+
+services:
+  postgres:
+    ports: !override []
+    # From `.env` — real credentials must not live in a tracked file. Without
+    # this the base file's postgres/postgres default disagrees with DATABASE_URL.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    restart: unless-stopped
+
+  redis:
+    ports: !override []
+    restart: unless-stopped
+
+  web:
+    ports: !override []
+    volumes: !override
+      - static_data:/app/staticfiles
+      - media_data:/app/media
+    env_file: !override
+      - .env
+    restart: unless-stopped
+
+  celery_worker:
+    volumes: !override []
+    env_file: !override
+      - .env
+    restart: unless-stopped
+
+  nginx:
+    # Only loopback — the host nginx proxies https://api.<domain> here.
+    ports: !override
+      - "127.0.0.1:8076:80"
+    restart: unless-stopped

@@ -98,7 +98,7 @@ pytest.
 ```bash
 cp .env.example .env
 docker compose up -d          # http://localhost:8000
-# admin at /admin — phone +998900000001, code 0000 in DEBUG
+# admin at /admin — user "testadmin", password "admin12345"
 ```
 and open two windows (one incognito) to matchmake against yourself, or play the bot.
 

@@ -12,12 +12,12 @@ from django.conf import settings
 from django.core.paginator import Paginator
 from django.db.models import Q
 from django.utils.timezone import now
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.game.models import Game
-from apps.game.models.handbook import GameTypes
+from apps.game.models.handbook import GameTypes, ConnectionHistory
 from apps.game.serializers import (
     GameTypesSerializer,
     ActiveGameSerializer,
@@ -172,21 +172,31 @@ class LeaderboardView(APIView):
 
 
 class ActiveGameView(APIView):
-    """Check if the current user has an active (unfinished) game."""
-    permission_classes = [IsAuthenticated]
+    """Check if the current user has an active (unfinished) game.
+
+    Works for BOTH registered users (DRF token → request.user) and guests
+    (43-char anonym_token → ConnectionHistory). AllowAny is deliberate: guests
+    play matchmaking too, so requiring auth here 401'd on every guest navigation
+    (the frontend check-active-game middleware runs site-wide). The old code even
+    had a guest branch, but it was unreachable behind IsAuthenticated and keyed
+    on user.pk (None for a guest) instead of the guest's connection id.
+    """
+    permission_classes = [AllowAny]
 
     def get(self, request):
         user = request.user
-        user_id = user.pk
 
         if user.is_authenticated:
             active = Game.objects.filter(
-                Q(white_id=user_id) | Q(black_id=user_id),
+                Q(white_id=user.pk) | Q(black_id=user.pk),
                 has_ended=False,
             ).first()
         else:
+            conn = self._guest_connection(request)
+            if conn is None:
+                return Response({"status": "none", "message": "No active games"})
             active = Game.objects.filter(
-                Q(white_anonym_id=user_id) | Q(black_anonym_id=user_id),
+                Q(white_anonym_id=conn.id) | Q(black_anonym_id=conn.id),
                 has_ended=False,
             ).first()
 
@@ -201,3 +211,17 @@ class ActiveGameView(APIView):
             "status": "none",
             "message": "No active games",
         })
+
+    @staticmethod
+    def _guest_connection(request):
+        """Resolve a guest's ConnectionHistory from the Authorization header.
+
+        REST sends "Authorization: Token <token>"; for a guest that token is the
+        anonym_token (token_urlsafe(32) → 43 chars, see ws_auth.is_anonym_token).
+        """
+        raw = request.META.get("HTTP_AUTHORIZATION", "")
+        parts = raw.split()
+        token = parts[1] if len(parts) == 2 else (parts[0] if parts else "")
+        if not token or len(token) < 43:
+            return None
+        return ConnectionHistory.objects.filter(anonym_token=token).first()

@@ -133,7 +133,16 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Django REST Framework
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
+        # Custom auth returns None (not HTTP 401) on an unknown token, so a guest's
+        # 43-char anonym_token falls through to AnonymousUser instead of failing at
+        # the auth layer. Endpoints that need a real user still enforce it via
+        # IsAuthenticated; public (AllowAny) endpoints now work for guests too.
+        # Standard TokenAuthentication RAISES 401 on any non-DRF token, which 401'd
+        # every guest REST call (they send "Authorization: Token <anonym_token>").
+        "shared.django.CustomTokenAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.AllowAny",
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
@@ -159,16 +168,6 @@ CELERY_TIMEZONE = TIME_ZONE
 
 # Redis (direct access for rematch, matchmaking, etc.)
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
-
-# Django REST Framework
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
-    ],
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.AllowAny",
-    ],
-}
 
 # CORS
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[

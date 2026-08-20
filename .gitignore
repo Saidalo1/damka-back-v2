@@ -338,3 +338,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+
+# README demo GIFs (the media/ rules above target Django uploads, not these)
+!docs/media/
+!docs/media/*.gif
+!docs/media/*.md
